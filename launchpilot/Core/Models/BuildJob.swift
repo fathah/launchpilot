@@ -87,6 +87,8 @@ struct BuildJob: Identifiable, Hashable, Codable, Sendable {
     var completedAt: Date?
     var commands: [BuildCommand]
     var artifacts: [BuildArtifact]
+    var failureReason: String?
+    var failedStepLabel: String?
 
     init(
         projectId: UUID,

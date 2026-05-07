@@ -34,7 +34,9 @@ actor EnvironmentResolver {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = ["-l", "-c", "/usr/bin/env"]
+        // -i sources .zshrc / .bashrc where most users put SDK PATH exports
+        // (Flutter, Android SDK, nvm, etc.). -l also runs login files.
+        process.arguments = ["-ilc", "/usr/bin/env"]
 
         let pipe = Pipe()
         process.standardOutput = pipe

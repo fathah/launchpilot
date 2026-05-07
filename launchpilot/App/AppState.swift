@@ -167,6 +167,10 @@ final class AppState {
                 defaults.environments[key]?.android?.packageName = pkg
             }
         }
+        if usesNodePackageManager(project.framework),
+           let pm = PackageManager.detect(at: url) {
+            defaults.project.packageManager = pm.rawValue
+        }
         return try ConfigManager.ensure(defaults, at: url)
     }
 
@@ -198,10 +202,20 @@ final class AppState {
                 config.environments[key]?.android?.packageName = pkg
             }
         }
+        if usesNodePackageManager(project.framework),
+           config.project.packageManager?.isEmpty != false,
+           let pm = PackageManager.detect(at: url) {
+            config.project.packageManager = pm.rawValue
+            changed = true
+        }
         if changed {
             try ConfigManager.write(config, to: url)
         }
         return config
+    }
+
+    private func usesNodePackageManager(_ framework: Framework) -> Bool {
+        framework == .reactNative || framework == .expo
     }
 
     func writeConfig(_ config: ProjectConfig, for project: Project) throws {

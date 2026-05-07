@@ -136,10 +136,11 @@ enum CommandPlanner {
         let archiveRel = ios?.build?.archivePath ?? "ios/build/archive/App.xcarchive"
         let iosDir = project.url.appendingPathComponent("ios")
 
+        let pm = resolvePackageManager(project: project, config: config)
         let install = ProcessSpec(
-            label: "npm install",
-            executable: "npm",
-            arguments: ["install"],
+            label: "\(pm.executable) install",
+            executable: pm.executable,
+            arguments: pm.installArguments,
             workingDirectory: project.url
         )
         let pod = ProcessSpec(
@@ -259,10 +260,11 @@ enum CommandPlanner {
     private static func planReactNativeAndroid(project: Project, config: ProjectConfig) -> PlannedBuild {
         let module = config.apps.android?.module ?? "app"
         let task = bundleTask(forFlavor: config.apps.android?.flavor)
+        let pm = resolvePackageManager(project: project, config: config)
         let install = ProcessSpec(
-            label: "npm install",
-            executable: "npm",
-            arguments: ["install"],
+            label: "\(pm.executable) install",
+            executable: pm.executable,
+            arguments: pm.installArguments,
             workingDirectory: project.url
         )
         let gradle = ProcessSpec(
@@ -282,6 +284,14 @@ enum CommandPlanner {
                 )
             ]
         )
+    }
+
+    static func resolvePackageManager(project: Project, config: ProjectConfig) -> PackageManager {
+        if let raw = config.project.packageManager,
+           let pm = PackageManager(rawValue: raw) {
+            return pm
+        }
+        return PackageManager.detect(at: project.url) ?? .npm
     }
 
     private static func bundleTask(forFlavor flavor: String?) -> String {

@@ -31,7 +31,7 @@ enum FrameworkDetector {
     }
 }
 
-enum DetectionFS {
+nonisolated enum DetectionFS {
     static func exists(_ url: URL) -> Bool {
         FileManager.default.fileExists(atPath: url.path)
     }

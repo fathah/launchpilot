@@ -106,6 +106,9 @@ enum BuildEngine {
                 case .exited(let code):
                     if code != 0 {
                         stepFailed = true
+                        await MainActor.run {
+                            session.failureReason = "Step \"\(spec.label)\" exited with code \(code)."
+                        }
                     }
                     await writer.writeFooter(exitCode: code, cancelled: false)
                 case .failed(let message):
@@ -114,6 +117,7 @@ enum BuildEngine {
                         session.failureReason = message
                         session.append(LogLine(stream: .stderr, text: message, timestamp: Date()))
                     }
+                    await writer.writeFailure(message)
                     await writer.writeFooter(exitCode: nil, cancelled: false)
                 case .cancelled:
                     stepCancelled = true

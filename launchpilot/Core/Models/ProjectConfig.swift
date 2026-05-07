@@ -14,6 +14,7 @@ struct ProjectConfig: Codable, Hashable, Sendable {
         var name: String
         var framework: String
         var root: String
+        var packageManager: String?
     }
 
     struct AppsConfig: Codable, Hashable, Sendable {
@@ -145,7 +146,7 @@ struct ProjectConfig: Codable, Hashable, Sendable {
 
         return ProjectConfig(
             version: 1,
-            project: ProjectMeta(name: name, framework: framework.rawValue, root: "."),
+            project: ProjectMeta(name: name, framework: framework.rawValue, root: ".", packageManager: nil),
             apps: AppsConfig(ios: ios, android: android),
             environments: [
                 "production": EnvironmentConfig(

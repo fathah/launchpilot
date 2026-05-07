@@ -41,6 +41,10 @@ actor BuildLogWriter {
         write(prefix + line.text + "\n")
     }
 
+    func writeFailure(_ message: String) {
+        write("[stderr] launchpilot: " + message + "\n")
+    }
+
     func writeFooter(exitCode: Int32?, cancelled: Bool) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let summary: String
@@ -49,7 +53,7 @@ actor BuildLogWriter {
         } else if let code = exitCode {
             summary = "# exited \(code) at \(timestamp)"
         } else {
-            summary = "# finished at \(timestamp)"
+            summary = "# failed to launch at \(timestamp)"
         }
         write("\n" + summary + "\n")
     }

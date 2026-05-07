@@ -9,6 +9,13 @@ struct BuildDetailView: View {
             header
             Divider()
             stepsBar
+            if session.status == .failed {
+                FailureBanner(
+                    failureReason: session.failureReason,
+                    failedStepLabel: failedStepLabel,
+                    diagnosis: ErrorDiagnoser.diagnose(failureReason: session.failureReason, lines: session.lines)
+                )
+            }
             Divider()
             LogConsoleView(lines: session.lines, autoScroll: session.status == .running)
         }
@@ -29,15 +36,38 @@ struct BuildDetailView: View {
                     } label: {
                         Label("Cancel", systemImage: "stop.fill")
                     }
-                } else if let url = session.logFileURL {
+                } else {
                     Button {
-                        appState.revealInFinder(path: url.path)
+                        copyLogToClipboard()
                     } label: {
-                        Label("Reveal log", systemImage: "doc.text.magnifyingglass")
+                        Label("Copy log", systemImage: "doc.on.doc")
+                    }
+                    if let url = session.logFileURL {
+                        Button {
+                            appState.revealInFinder(path: url.path)
+                        } label: {
+                            Label("Reveal log", systemImage: "doc.text.magnifyingglass")
+                        }
                     }
                 }
             }
         }
+    }
+
+    private var failedStepLabel: String? {
+        guard session.stepStatuses.indices.contains(session.currentStepIndex),
+              session.stepStatuses[session.currentStepIndex] == .failed,
+              session.stepLabels.indices.contains(session.currentStepIndex) else { return nil }
+        return session.stepLabels[session.currentStepIndex]
+    }
+
+    private func copyLogToClipboard() {
+        let text = session.lines.map { line in
+            line.stream == .stderr ? "[stderr] \(line.text)" : line.text
+        }.joined(separator: "\n")
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     private var header: some View {
@@ -230,6 +260,14 @@ struct FinishedBuildView: View {
                 }
             }
             .padding(16)
+            if job.status == .failed {
+                Divider()
+                FailureBanner(
+                    failureReason: job.failureReason,
+                    failedStepLabel: job.failedStepLabel,
+                    diagnosis: ErrorDiagnoser.diagnose(failureReason: job.failureReason, logText: logText)
+                )
+            }
             Divider()
             ScrollView {
                 Text(logText.isEmpty ? (loadFailed ? "Could not load log file." : "Loading…") : logText)
@@ -250,6 +288,14 @@ struct FinishedBuildView: View {
                     Label("Builds", systemImage: "chevron.left")
                 }
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    copyLogToClipboard()
+                } label: {
+                    Label("Copy log", systemImage: "doc.on.doc")
+                }
+                .disabled(logText.isEmpty)
+            }
         }
         .task(id: job.id) {
             loadLog()
@@ -267,6 +313,75 @@ struct FinishedBuildView: View {
             logText = ""
             loadFailed = true
         }
+    }
+
+    private func copyLogToClipboard() {
+        guard !logText.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(logText, forType: .string)
+    }
+}
+
+struct FailureBanner: View {
+    let failureReason: String?
+    let failedStepLabel: String?
+    let diagnosis: Diagnosis?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(diagnosis?.title ?? primaryHeadline)
+                        .font(.headline)
+                    if let reason = failureReason {
+                        Text(reason)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let diagnosis {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(diagnosis.explanation)
+                        .font(.callout)
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "lightbulb.fill")
+                            .foregroundStyle(.yellow)
+                        Text(diagnosis.suggestion)
+                            .font(.callout)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.yellow.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.yellow.opacity(0.3), lineWidth: 1)
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.06))
+    }
+
+    private var primaryHeadline: String {
+        if let failedStepLabel {
+            return "Step \"\(failedStepLabel)\" failed"
+        }
+        return "Build failed"
     }
 }
 

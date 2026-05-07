@@ -102,6 +102,9 @@ struct ProjectDetailView: View {
                     if let pkg = cfg.apps.android?.packageName, !pkg.isEmpty {
                         KeyValueRow(label: "Android package", value: pkg)
                     }
+                    if usesNodePM {
+                        packageManagerPicker(current: cfg.project.packageManager)
+                    }
                     if !cfg.environments.isEmpty {
                         KeyValueRow(
                             label: "Environments",
@@ -174,6 +177,59 @@ struct ProjectDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var usesNodePM: Bool {
+        project.framework == .reactNative || project.framework == .expo
+    }
+
+    @ViewBuilder
+    private func packageManagerPicker(current: String?) -> some View {
+        let resolved: PackageManager = {
+            if let raw = current, let pm = PackageManager(rawValue: raw) { return pm }
+            return PackageManager.detect(at: project.url) ?? .npm
+        }()
+        let detectedNote: String? = {
+            if current == nil, let pm = PackageManager.detect(at: project.url) {
+                return "Detected from lockfile: \(pm.displayName)"
+            }
+            return nil
+        }()
+
+        HStack(alignment: .firstTextBaseline) {
+            Text("Package manager")
+                .frame(width: 140, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            Picker("", selection: Binding(
+                get: { resolved },
+                set: { setPackageManager($0) }
+            )) {
+                ForEach(PackageManager.allCases) { pm in
+                    Text(pm.displayName).tag(pm)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 160)
+            if let note = detectedNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+    }
+
+    private func setPackageManager(_ pm: PackageManager) {
+        guard var cfg = config else { return }
+        cfg.project.packageManager = pm.rawValue
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
         }
     }
 

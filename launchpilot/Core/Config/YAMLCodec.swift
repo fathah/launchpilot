@@ -15,7 +15,7 @@ enum YAMLCodecError: Error, LocalizedError {
 enum YAMLCodec {
     private static let keyOrder: [String: Int] = {
         let keys = [
-            "version", "project", "name", "framework", "root", "display_name",
+            "version", "project", "name", "framework", "root", "package_manager", "display_name",
             "apps", "ios", "android",
             "enabled", "bundle_id", "package_name", "scheme", "workspace",
             "configuration", "module", "build_type", "flavor", "artifact_type",

@@ -48,6 +48,13 @@ final class BuildSession: Identifiable {
         snapshot.startedAt = startedAt
         snapshot.completedAt = completedAt
         snapshot.artifacts = artifacts
+        snapshot.failureReason = failureReason
+        if status == .failed,
+           stepStatuses.indices.contains(currentStepIndex),
+           stepStatuses[currentStepIndex] == .failed,
+           stepLabels.indices.contains(currentStepIndex) {
+            snapshot.failedStepLabel = stepLabels[currentStepIndex]
+        }
         return snapshot
     }
 }
