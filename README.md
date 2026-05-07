@@ -1,6 +1,12 @@
-# launchpilot
+<p align="center">
+<img width="300"  alt="launchpilot-h" src="https://github.com/user-attachments/assets/d6ed907e-36e8-469b-b936-30710df10de5" />
+</p>
 
-> Build. Sign. Ship. — A native macOS app for building, signing, archiving, and publishing mobile apps with a clean GUI and editable project configuration.
+<b>
+<p align="center">
+  A native macOS app for building, signing, archiving, and publishing mobile apps with a clean GUI and editable project configuration.
+</p>
+</b>
 
 launchpilot makes mobile app releases simple. Point it at a project folder, and it detects the framework, manages your config, validates the local environment, builds, signs, archives, and optionally publishes to the App Store, TestFlight, or Google Play.
 
