@@ -28,13 +28,13 @@ Select project → Detect stack → Configure once → Build → Archive → Pub
 
 ## Supported Frameworks
 
-| Framework | Detection | Status |
-|-----------|-----------|--------|
-| Flutter | `pubspec.yaml` + `ios/` + `android/` | MVP |
-| Expo | `app.json` / `app.config.*` + `expo` in `package.json` | MVP |
-| React Native CLI | `react-native` in `package.json` + native dirs | MVP |
-| Native iOS | `.xcodeproj` / `.xcworkspace` | MVP |
-| Native Android | `settings.gradle` / `build.gradle` | MVP |
+| Framework        | Detection                                              | Status |
+| ---------------- | ------------------------------------------------------ | ------ |
+| Flutter          | `pubspec.yaml` + `ios/` + `android/`                   | MVP    |
+| Expo             | `app.json` / `app.config.*` + `expo` in `package.json` | MVP    |
+| React Native CLI | `react-native` in `package.json` + native dirs         | MVP    |
+| Native iOS       | `.xcodeproj` / `.xcworkspace`                          | MVP    |
+| Native Android   | `settings.gradle` / `build.gradle`                     | MVP    |
 
 ## Release Targets
 
@@ -166,4 +166,4 @@ Contributions are welcome. The project follows an adapter-based architecture so 
 
 ## License
 
-To be added.
+**Launch Pilot** is released under the [MIT License](LICENSE.md).

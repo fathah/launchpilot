@@ -345,16 +345,15 @@ final class AppState {
         let policy = artifactsPolicy(for: job.projectId)
 
         // Per-project retention: keep the N most-recent jobs for this project.
-        let projectJobs = recentJobs
-            .filter { $0.projectId == job.projectId }
-            .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
-        if projectJobs.count > policy.keepLast {
-            let dropped = projectJobs.dropFirst(policy.keepLast)
+        let dropped = ArtifactRetention.jobsToPrune(
+            in: recentJobs,
+            forProjectId: job.projectId,
+            keepLast: policy.keepLast
+        )
+        if !dropped.isEmpty {
             let droppedIds = Set(dropped.map(\.id))
             for old in dropped {
-                let logURL = AppConstants.logsDirectory
-                    .appendingPathComponent(old.projectId.uuidString)
-                    .appendingPathComponent("\(old.id.uuidString).log")
+                let logURL = ArtifactRetention.logURL(projectId: old.projectId, jobId: old.id)
                 try? FileManager.default.removeItem(at: logURL)
             }
             recentJobs.removeAll(where: { droppedIds.contains($0.id) })
