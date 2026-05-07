@@ -157,7 +157,7 @@ struct ProjectDetailView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 360, alignment: .leading)
                 Text("Detected \(schemes.count) scheme\(schemes.count == 1 ? "" : "s") in the Xcode project. The selected scheme is passed to `xcodebuild archive`.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -182,7 +182,7 @@ struct ProjectDetailView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 360, alignment: .leading)
                 Text("Detected \(flavors.count) product flavor\(flavors.count == 1 ? "" : "s") in app/build.gradle. The selection drives the Gradle task (e.g. `bundle\(displayCap(current.isEmpty ? "" : current))Release`).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -416,7 +416,7 @@ struct ProjectDetailView: View {
                     if hasKeystoreSelected {
                         AndroidSigningSnippet()
                     } else {
-                        Text("Select a keystore credential to sign release AAB/APK builds. launchpilot passes the keystore details to Gradle as `-P` properties — your `app/build.gradle` reads them.")
+                        Text("Select a keystore credential to sign release AAB/APK builds.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -467,7 +467,7 @@ struct ProjectDetailView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 360, alignment: .leading)
             }
             Spacer()
         }
@@ -561,7 +561,7 @@ struct ProjectDetailView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 360, alignment: .leading)
             }
             Spacer()
         }
@@ -634,7 +634,7 @@ struct ProjectDetailView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 360, alignment: .leading)
             }
             Spacer()
         }
@@ -659,7 +659,7 @@ struct ProjectDetailView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(maxWidth: 200)
+            .frame(maxWidth: 200, alignment: .leading)
             Spacer()
         }
     }
@@ -751,7 +751,7 @@ struct ProjectDetailView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(maxWidth: 160)
+            .frame(maxWidth: 160, alignment: .leading)
             if let note = detectedNote {
                 Text(note)
                     .font(.caption)

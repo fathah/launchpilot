@@ -44,7 +44,7 @@ struct AndroidSigningSnippet: View {
                 .controlSize(.small)
             }
 
-            Text("launchpilot passes signing details as `-P` properties at build time. Your `app/build.gradle` needs to read them from the project.")
+            Text("Launch Pilot passes signing details as `-P` properties at build time. Your `app/build.gradle` needs to read them from the project.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
