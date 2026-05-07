@@ -1,0 +1,4 @@
+.env
+build/
+*.p8
+*.xcarchive
