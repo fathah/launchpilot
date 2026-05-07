@@ -97,13 +97,191 @@ struct CommandPlannerTests {
         }
 
         // Upload step uses /bin/sh and references the IPA dir + altool
-        let upload = plan.steps.last!
+        let upload = plan.steps.last!.processSpec!
         #expect(upload.executable == "/bin/sh")
         let script = upload.arguments.last ?? ""
         #expect(script.contains("altool"))
         #expect(script.contains("--apiKey \"KEY123\""))
         #expect(script.contains("--apiIssuer \"11111111-2222-3333-4444-555555555555\""))
         #expect(upload.workingDirectory.path == tempDir.path)
+    }
+
+    @Test func nativeAndroidPlanOmitsSigningWhenNoKeystoreRef() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        let config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        let plan = try CommandPlanner.plan(action: .buildAndroidAAB, project: project, config: config)
+
+        let gradle = plan.steps.first(where: { $0.label.contains("gradlew") })?.processSpec
+        #expect(gradle != nil)
+        #expect(gradle?.arguments.contains(where: { $0.hasPrefix("-PLP_KEYSTORE_FILE") }) == false)
+    }
+
+    @Test func nativeAndroidPlanInjectsSigningWhenKeystorePresent() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        var config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        config.apps.android?.signing = ProjectConfig.AndroidSigning(keystoreRef: "release_keystore")
+
+        let credential = Credential(
+            ref: "release_keystore",
+            displayName: "Release",
+            secret: .androidKeystore(AndroidKeystoreSecret(
+                keystorePath: "/Users/example/release.jks",
+                keystorePassword: "store-pass",
+                keyAlias: "release",
+                keyPassword: "key-pass"
+            ))
+        )
+
+        let plan = try CommandPlanner.plan(
+            action: .buildAndroidAAB,
+            project: project,
+            config: config,
+            credentials: ["release_keystore": credential]
+        )
+        let gradle = plan.steps.first(where: { $0.label.contains("gradlew") })?.processSpec
+        #expect(gradle != nil)
+        let args = gradle?.arguments ?? []
+        #expect(args.contains("-PLP_KEYSTORE_FILE=/Users/example/release.jks"))
+        #expect(args.contains("-PLP_KEYSTORE_PASSWORD=store-pass"))
+        #expect(args.contains("-PLP_KEY_ALIAS=release"))
+        #expect(args.contains("-PLP_KEY_PASSWORD=key-pass"))
+    }
+
+    @Test func nativeAndroidPlanSkipsSigningWhenCredentialMissing() throws {
+        // keystore_ref is set, but no matching credential — we should still build,
+        // just without signing (so the build fails predictably with a gradle error).
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        var config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        config.apps.android?.signing = ProjectConfig.AndroidSigning(keystoreRef: "missing_ref")
+
+        let plan = try CommandPlanner.plan(
+            action: .buildAndroidAAB,
+            project: project,
+            config: config,
+            credentials: [:]
+        )
+        let gradle = plan.steps.first(where: { $0.label.contains("gradlew") })?.processSpec
+        #expect(gradle?.arguments.contains(where: { $0.hasPrefix("-PLP_KEYSTORE_FILE") }) == false)
+    }
+
+    @Test func flutterAndroidInjectsSigningProperties() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .flutter)
+        var config = ProjectConfig.defaults(name: "App", framework: .flutter)
+        config.apps.android?.signing = ProjectConfig.AndroidSigning(keystoreRef: "ks")
+
+        let credential = Credential(
+            ref: "ks",
+            displayName: "Release",
+            secret: .androidKeystore(AndroidKeystoreSecret(
+                keystorePath: "/keys/r.jks",
+                keystorePassword: "p1",
+                keyAlias: "a1",
+                keyPassword: "p2"
+            ))
+        )
+
+        let plan = try CommandPlanner.plan(
+            action: .buildAndroidAAB,
+            project: project,
+            config: config,
+            credentials: ["ks": credential]
+        )
+        let appbundle = plan.steps.first(where: { $0.label.contains("appbundle") })?.processSpec
+        #expect(appbundle?.arguments.contains("-PLP_KEYSTORE_FILE=/keys/r.jks") == true)
+    }
+
+    @Test func googlePlayPlanFailsWithoutCredentialRef() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        var config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        config.apps.android?.packageName = "org.example.app"
+
+        #expect(throws: PlanningError.self) {
+            _ = try CommandPlanner.plan(action: .publishGooglePlay, project: project, config: config)
+        }
+    }
+
+    @Test func googlePlayPlanFailsWithoutPackageName() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        var config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        config.publishing.googlePlay = ProjectConfig.GooglePlayPublishing(
+            enabled: true, serviceAccountRef: "play_main", defaultTrack: "internal"
+        )
+        let credential = Credential(
+            ref: "play_main",
+            displayName: "Play",
+            secret: .googlePlayServiceAccount(GooglePlayServiceAccountSecret(
+                jsonContents: "{}", clientEmail: nil
+            ))
+        )
+        #expect(throws: PlanningError.self) {
+            _ = try CommandPlanner.plan(
+                action: .publishGooglePlay,
+                project: project,
+                config: config,
+                credentials: ["play_main": credential]
+            )
+        }
+    }
+
+    @Test func googlePlayPlanIncludesBuildAndUploadSteps() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lp-planner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let project = Project(name: "App", path: dir.path, framework: .nativeAndroid)
+        var config = ProjectConfig.defaults(name: "App", framework: .nativeAndroid)
+        config.apps.android?.packageName = "org.example.app"
+        config.publishing.googlePlay = ProjectConfig.GooglePlayPublishing(
+            enabled: true, serviceAccountRef: "play_main", defaultTrack: "alpha"
+        )
+        let credential = Credential(
+            ref: "play_main",
+            displayName: "Play",
+            secret: .googlePlayServiceAccount(GooglePlayServiceAccountSecret(
+                jsonContents: #"{"client_email":"x@y.iam.gserviceaccount.com"}"#,
+                clientEmail: "x@y.iam.gserviceaccount.com"
+            ))
+        )
+        let plan = try CommandPlanner.plan(
+            action: .publishGooglePlay,
+            project: project,
+            config: config,
+            credentials: ["play_main": credential]
+        )
+        #expect(plan.steps.contains(where: { $0.label.contains("gradlew") }))
+        #expect(plan.steps.last?.label.contains("Google Play") == true)
+        #expect(plan.steps.last?.label.contains("alpha") == true)
     }
 
     @Test func testFlightRejectsAndroidOnlyFramework() throws {

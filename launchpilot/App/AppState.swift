@@ -19,6 +19,9 @@ final class AppState {
     var editingCredential: Credential?
     var addingCredentialKind: CredentialKind?
 
+    var environmentChecks: [UUID: [EnvironmentCheck]] = [:]
+    var environmentChecksInProgress: Set<UUID> = []
+
     private let projectStore: ProjectStore
     private let preferences: PreferencesStore
     private let buildHistory: BuildHistoryStore
@@ -83,6 +86,39 @@ final class AppState {
             try credentialStore.save(credential, isNew: isNew)
         }
         reloadCredentials()
+    }
+
+    func refreshEnvironment(for project: Project, force: Bool = false) {
+        if !force, environmentChecks[project.id] != nil { return }
+        if environmentChecksInProgress.contains(project.id) { return }
+        environmentChecksInProgress.insert(project.id)
+
+        let pm = resolvedPackageManager(for: project)
+        let framework = project.framework
+        let projectId = project.id
+
+        Task { [weak self] in
+            let results = await EnvironmentValidator.checks(framework: framework, packageManager: pm)
+            await MainActor.run {
+                guard let self else { return }
+                self.environmentChecks[projectId] = results
+                self.environmentChecksInProgress.remove(projectId)
+            }
+        }
+    }
+
+    private func resolvedPackageManager(for project: Project) -> PackageManager? {
+        guard project.framework == .reactNative || project.framework == .expo else { return nil }
+        if let url = scopedURLs[project.id] ?? (project.bookmarkData == nil ? project.url : nil) {
+            if ConfigManager.exists(at: url),
+               let cfg = try? ConfigManager.read(at: url),
+               let raw = cfg.project.packageManager,
+               let pm = PackageManager(rawValue: raw) {
+                return pm
+            }
+            return PackageManager.detect(at: url)
+        }
+        return nil
     }
 
     func deleteCredential(_ credential: Credential) {
@@ -304,13 +340,61 @@ final class AppState {
     private func recordCompletion(job: BuildJob) {
         activeSessions.removeAll(where: { $0.id == job.id })
         recentJobs.insert(job, at: 0)
-        if recentJobs.count > 200 {
-            recentJobs.removeLast(recentJobs.count - 200)
+
+        // Resolve the project's artifact policy.
+        let policy = artifactsPolicy(for: job.projectId)
+
+        // Per-project retention: keep the N most-recent jobs for this project.
+        let projectJobs = recentJobs
+            .filter { $0.projectId == job.projectId }
+            .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }
+        if projectJobs.count > policy.keepLast {
+            let dropped = projectJobs.dropFirst(policy.keepLast)
+            let droppedIds = Set(dropped.map(\.id))
+            for old in dropped {
+                let logURL = AppConstants.logsDirectory
+                    .appendingPathComponent(old.projectId.uuidString)
+                    .appendingPathComponent("\(old.id.uuidString).log")
+                try? FileManager.default.removeItem(at: logURL)
+            }
+            recentJobs.removeAll(where: { droppedIds.contains($0.id) })
         }
+
+        // Hard cap across all projects.
+        if recentJobs.count > 500 {
+            recentJobs.removeLast(recentJobs.count - 500)
+        }
+
         let snapshot = recentJobs
         Task { [buildHistory] in
             try? await buildHistory.save(snapshot)
         }
+
+        // open_after_build: reveal the first artifact when configured.
+        if policy.openAfterBuild,
+           job.status == .succeeded,
+           let firstArtifact = job.artifacts.first {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: firstArtifact.path)])
+        }
+    }
+
+    private struct ArtifactsPolicy {
+        let keepLast: Int
+        let openAfterBuild: Bool
+        static let `default` = ArtifactsPolicy(keepLast: 10, openAfterBuild: true)
+    }
+
+    private func artifactsPolicy(for projectId: UUID) -> ArtifactsPolicy {
+        guard let project = projects.first(where: { $0.id == projectId }) else {
+            return .default
+        }
+        let url = scopedURLs[project.id] ?? project.url
+        guard ConfigManager.exists(at: url),
+              let cfg = try? ConfigManager.read(at: url) else {
+            return .default
+        }
+        let keep = max(1, cfg.artifacts.keepLast)
+        return ArtifactsPolicy(keepLast: keep, openAfterBuild: cfg.artifacts.openAfterBuild)
     }
 
     private func scopedURL(for project: Project) -> URL? {

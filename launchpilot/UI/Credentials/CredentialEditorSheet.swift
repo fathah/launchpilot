@@ -696,15 +696,17 @@ private struct StepRow<Content: View>: View {
 
 private struct HelpPopoverButton: View {
     let title: String
-    var body: String? = nil
+    var prose: String? = nil
     var bullets: [String] = []
     var link: (label: String, url: String)? = nil
+    var triggerLabel: String = "Where do I get this?"
 
     @State private var show: Bool = false
 
-    init(title: String, body: String) {
+    init(title: String, body: String, triggerLabel: String = "What is this?") {
         self.title = title
-        self.body = body
+        self.prose = body
+        self.triggerLabel = triggerLabel
     }
 
     init(title: String, bullets: [String], link: (label: String, url: String)?) {
@@ -719,7 +721,7 @@ private struct HelpPopoverButton: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "questionmark.circle.fill")
-                Text("Where do I get this?")
+                Text(triggerLabel)
             }
             .font(.caption)
             .foregroundStyle(.tint)
@@ -729,8 +731,8 @@ private struct HelpPopoverButton: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(title)
                     .font(.headline)
-                if let body = self.body {
-                    Text(.init(body))
+                if let prose = self.prose {
+                    Text(.init(prose))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

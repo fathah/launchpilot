@@ -17,11 +17,17 @@ struct ProjectDetailView: View {
 
                 configSection
 
+                environmentSection
+
                 validationSection
 
                 actionsSection
 
+                androidSigningSection
+
                 publishingSection
+
+                publishingAndroidSection
             }
             .padding(24)
             .frame(maxWidth: 900, alignment: .leading)
@@ -51,6 +57,7 @@ struct ProjectDetailView: View {
         }
         .task(id: project.id) {
             loadConfig()
+            appState.refreshEnvironment(for: project)
         }
     }
 
@@ -139,6 +146,50 @@ struct ProjectDetailView: View {
     }
 
     @ViewBuilder
+    private var environmentSection: some View {
+        let checks = appState.environmentChecks[project.id]
+        let inProgress = appState.environmentChecksInProgress.contains(project.id)
+        SectionCard(title: "Environment") {
+            VStack(alignment: .leading, spacing: 10) {
+                if let checks {
+                    ForEach(checks) { check in
+                        EnvironmentRow(check: check)
+                    }
+                    HStack {
+                        Spacer()
+                        if inProgress {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button {
+                                appState.refreshEnvironment(for: project, force: true)
+                            } label: {
+                                Label("Re-run checks", systemImage: "arrow.clockwise")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                } else if inProgress {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Running pre-flight checks…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button {
+                        appState.refreshEnvironment(for: project, force: true)
+                    } label: {
+                        Label("Run pre-flight checks", systemImage: "play.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var validationSection: some View {
         if let cfg = config,
            let adapter = FrameworkDetector.adapter(for: project.framework) {
@@ -152,6 +203,88 @@ struct ProjectDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var androidSigningSection: some View {
+        if project.framework.supportsAndroid, config?.apps.android?.enabled == true {
+            SectionCard(title: "Android signing") {
+                VStack(alignment: .leading, spacing: 12) {
+                    keystoreCredentialPicker
+                    if hasKeystoreSelected {
+                        AndroidSigningSnippet()
+                    } else {
+                        Text("Select a keystore credential to sign release AAB/APK builds. launchpilot passes the keystore details to Gradle as `-P` properties — your `app/build.gradle` reads them.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var keystoreCredentials: [Credential] {
+        appState.credentials.filter { $0.kind == .androidKeystore }
+    }
+
+    private var selectedKeystoreRef: String? {
+        config?.apps.android?.signing?.keystoreRef
+    }
+
+    private var hasKeystoreSelected: Bool {
+        guard let ref = selectedKeystoreRef, !ref.isEmpty else { return false }
+        return keystoreCredentials.contains(where: { $0.ref == ref })
+    }
+
+    @ViewBuilder
+    private var keystoreCredentialPicker: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Release keystore")
+                .frame(width: 180, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            if keystoreCredentials.isEmpty {
+                HStack(spacing: 8) {
+                    Text("No keystores saved")
+                        .foregroundStyle(.secondary)
+                    Button("Open Credentials") {
+                        appState.setSection(.credentials)
+                    }
+                    .buttonStyle(.link)
+                }
+            } else {
+                Picker("", selection: Binding<String>(
+                    get: { selectedKeystoreRef ?? "" },
+                    set: { setKeystoreRef($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("None").tag("")
+                    ForEach(keystoreCredentials) { credential in
+                        Text("\(credential.displayName) — \(credential.ref)")
+                            .tag(credential.ref)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 360)
+            }
+            Spacer()
+        }
+    }
+
+    private func setKeystoreRef(_ ref: String?) {
+        guard var cfg = config else { return }
+        if cfg.apps.android == nil { return }
+        if cfg.apps.android?.signing == nil {
+            cfg.apps.android?.signing = ProjectConfig.AndroidSigning(keystoreRef: ref)
+        } else {
+            cfg.apps.android?.signing?.keystoreRef = ref
+        }
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
         }
     }
 
@@ -230,6 +363,142 @@ struct ProjectDetailView: View {
                 .frame(maxWidth: 360)
             }
             Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var publishingAndroidSection: some View {
+        if project.framework.supportsAndroid, config?.apps.android?.enabled == true {
+            SectionCard(title: "Publish Android") {
+                VStack(alignment: .leading, spacing: 12) {
+                    googlePlayCredentialPicker
+                    googlePlayTrackPicker
+                    HStack(spacing: 12) {
+                        Button {
+                            appState.startBuild(action: .publishGooglePlay, for: project)
+                        } label: {
+                            Label("Build + Upload to Google Play", systemImage: "paperplane.fill")
+                        }
+                        .disabled(!canUploadToGooglePlay)
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Text("Builds the release AAB, then uploads it to the chosen Play Console track via the Google Play Developer API. The bundle is created as a draft release — promote it from Play Console.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var googlePlayCredentials: [Credential] {
+        appState.credentials.filter { $0.kind == .googlePlayServiceAccount }
+    }
+
+    private var selectedGooglePlayRef: String? {
+        config?.publishing.googlePlay?.serviceAccountRef
+    }
+
+    private var canUploadToGooglePlay: Bool {
+        guard let ref = selectedGooglePlayRef, !ref.isEmpty else { return false }
+        guard googlePlayCredentials.contains(where: { $0.ref == ref }) else { return false }
+        return !(config?.apps.android?.packageName?.isEmpty ?? true)
+    }
+
+    @ViewBuilder
+    private var googlePlayCredentialPicker: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Service account")
+                .frame(width: 180, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            if googlePlayCredentials.isEmpty {
+                HStack(spacing: 8) {
+                    Text("No service accounts saved")
+                        .foregroundStyle(.secondary)
+                    Button("Open Credentials") {
+                        appState.setSection(.credentials)
+                    }
+                    .buttonStyle(.link)
+                }
+            } else {
+                Picker("", selection: Binding<String>(
+                    get: { selectedGooglePlayRef ?? "" },
+                    set: { setGooglePlayRef($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("None").tag("")
+                    ForEach(googlePlayCredentials) { credential in
+                        Text("\(credential.displayName) — \(credential.ref)")
+                            .tag(credential.ref)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 360)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var googlePlayTrackPicker: some View {
+        let tracks = ["internal", "alpha", "beta", "production"]
+        let current = config?.publishing.googlePlay?.defaultTrack ?? "internal"
+        HStack(alignment: .firstTextBaseline) {
+            Text("Default track")
+                .frame(width: 180, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            Picker("", selection: Binding<String>(
+                get: { current },
+                set: { setGooglePlayTrack($0) }
+            )) {
+                ForEach(tracks, id: \.self) { track in
+                    Text(track.capitalized).tag(track)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 200)
+            Spacer()
+        }
+    }
+
+    private func setGooglePlayRef(_ ref: String?) {
+        guard var cfg = config else { return }
+        if cfg.publishing.googlePlay == nil {
+            cfg.publishing.googlePlay = ProjectConfig.GooglePlayPublishing(
+                enabled: true,
+                serviceAccountRef: ref,
+                defaultTrack: "internal"
+            )
+        } else {
+            cfg.publishing.googlePlay?.serviceAccountRef = ref
+            cfg.publishing.googlePlay?.enabled = true
+        }
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
+        }
+    }
+
+    private func setGooglePlayTrack(_ track: String) {
+        guard var cfg = config else { return }
+        if cfg.publishing.googlePlay == nil {
+            cfg.publishing.googlePlay = ProjectConfig.GooglePlayPublishing(
+                enabled: true,
+                serviceAccountRef: nil,
+                defaultTrack: track
+            )
+        } else {
+            cfg.publishing.googlePlay?.defaultTrack = track
+        }
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
         }
     }
 

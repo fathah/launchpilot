@@ -1,12 +1,19 @@
 import Foundation
 
 struct PlannedBuild: Sendable {
-    let steps: [ProcessSpec]
+    let steps: [BuildStep]
     let expectedArtifacts: [PlannedArtifact]
     let cleanupPaths: [URL]
 
-    init(steps: [ProcessSpec], expectedArtifacts: [PlannedArtifact], cleanupPaths: [URL] = []) {
+    init(steps: [BuildStep], expectedArtifacts: [PlannedArtifact], cleanupPaths: [URL] = []) {
         self.steps = steps
+        self.expectedArtifacts = expectedArtifacts
+        self.cleanupPaths = cleanupPaths
+    }
+
+    /// Convenience for plans that are entirely subprocess steps.
+    init(processSteps: [ProcessSpec], expectedArtifacts: [PlannedArtifact], cleanupPaths: [URL] = []) {
+        self.steps = processSteps.map { .process($0) }
         self.expectedArtifacts = expectedArtifacts
         self.cleanupPaths = cleanupPaths
     }
@@ -47,12 +54,86 @@ enum CommandPlanner {
         case .buildIOSIPA, .archiveOnly where project.framework.supportsIOS:
             return try planIOS(project: project, config: config)
         case .buildAndroidAAB, .archiveOnly:
-            return try planAndroid(project: project, config: config)
+            return try planAndroid(project: project, config: config, credentials: credentials)
         case .publishTestFlight, .publishAppStore:
             return try planAppleUpload(action: action, project: project, config: config, credentials: credentials)
         case .publishGooglePlay:
-            throw PlanningError.unsupported(framework: project.framework, action: action)
+            return try planGooglePlayUpload(project: project, config: config, credentials: credentials)
         }
+    }
+
+    // MARK: - Google Play upload
+
+    private static func planGooglePlayUpload(
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) throws -> PlannedBuild {
+        guard project.framework.supportsAndroid else {
+            throw PlanningError.unsupported(framework: project.framework, action: .publishGooglePlay)
+        }
+        guard let ref = config.publishing.googlePlay?.serviceAccountRef, !ref.isEmpty else {
+            throw PlanningError.missing("publishing.google_play.service_account_ref — pick a service account first.")
+        }
+        guard let credential = credentials[ref],
+              case .googlePlayServiceAccount(let secret) = credential.secret else {
+            throw PlanningError.missing("Google Play service account '\(ref)' is not stored. Add it under Credentials.")
+        }
+        guard let packageName = config.apps.android?.packageName, !packageName.isEmpty else {
+            throw PlanningError.missing("apps.android.package_name")
+        }
+        let track = config.publishing.googlePlay?.defaultTrack ?? "internal"
+
+        let aabPlan = try planAndroid(project: project, config: config, credentials: credentials)
+        let aabRelativePath = aabPlan.expectedArtifacts
+            .first(where: { $0.type == .aab })?
+            .relativePath ?? "build/app/outputs/bundle/release"
+        let aabSearchDir = project.url.appendingPathComponent(aabRelativePath)
+        let serviceAccountJSON = secret.jsonContents
+
+        let upload = BuildStep.task(label: "Upload to Google Play (\(track))") { context in
+            await context.emit("Looking for AAB in \(aabSearchDir.path)…")
+            let aabURL: URL
+            do {
+                let entries = try FileManager.default.contentsOfDirectory(atPath: aabSearchDir.path)
+                guard let aabName = entries.first(where: { $0.hasSuffix(".aab") }) else {
+                    return .failed(message: "No .aab found in \(aabSearchDir.path).")
+                }
+                aabURL = aabSearchDir.appendingPathComponent(aabName)
+            } catch {
+                return .failed(message: "Could not list \(aabSearchDir.path): \(error.localizedDescription)")
+            }
+
+            let request = PlayStorePublishRequest(
+                packageName: packageName,
+                track: track,
+                aabPath: aabURL,
+                releaseStatus: "draft"
+            )
+
+            do {
+                _ = try await PlayStorePublisher.publish(
+                    request: request,
+                    serviceAccountJSON: serviceAccountJSON,
+                    log: { text, stream in
+                        await context.emit(text, stream: stream)
+                    },
+                    isCancelled: { await context.isCancelled() }
+                )
+                if await context.isCancelled() { return .cancelled }
+                return .succeeded
+            } catch PlayStorePublishError.cancelled {
+                return .cancelled
+            } catch {
+                return .failed(message: error.localizedDescription)
+            }
+        }
+
+        return PlannedBuild(
+            steps: aabPlan.steps + [upload],
+            expectedArtifacts: aabPlan.expectedArtifacts,
+            cleanupPaths: aabPlan.cleanupPaths
+        )
     }
 
     // MARK: - Apple upload (TestFlight / App Store)
@@ -113,7 +194,7 @@ enum CommandPlanner {
         )
 
         return PlannedBuild(
-            steps: archivePlan.steps + [upload],
+            steps: archivePlan.steps + [.process(upload)],
             expectedArtifacts: archivePlan.expectedArtifacts,
             cleanupPaths: [tempDir]
         )
@@ -157,7 +238,7 @@ enum CommandPlanner {
             workingDirectory: cwd
         )
         return PlannedBuild(
-            steps: [pubGet, buildIPA],
+            processSteps: [pubGet, buildIPA],
             expectedArtifacts: [
                 PlannedArtifact(name: "App.xcarchive", type: .xcarchive, platform: .iOS, relativePath: "build/ios/archive"),
                 PlannedArtifact(name: "App.ipa", type: .ipa, platform: .iOS, relativePath: "build/ios/ipa")
@@ -203,7 +284,7 @@ enum CommandPlanner {
         )
 
         return PlannedBuild(
-            steps: [archive, export],
+            processSteps: [archive, export],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: URL(fileURLWithPath: archiveRel).lastPathComponent,
@@ -275,7 +356,7 @@ enum CommandPlanner {
         )
 
         return PlannedBuild(
-            steps: [install, pod, archive, export],
+            processSteps: [install, pod, archive, export],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: URL(fileURLWithPath: archiveRel).lastPathComponent,
@@ -325,27 +406,35 @@ enum CommandPlanner {
 
     // MARK: - Android
 
-    private static func planAndroid(project: Project, config: ProjectConfig) throws -> PlannedBuild {
+    private static func planAndroid(
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) throws -> PlannedBuild {
         guard config.apps.android?.enabled == true else {
             throw PlanningError.missing("Android is not enabled in launchpilot.yaml")
         }
         switch project.framework {
         case .flutter:
-            return planFlutterAndroid(project: project, config: config)
+            return planFlutterAndroid(project: project, config: config, credentials: credentials)
         case .reactNative:
-            return planReactNativeAndroid(project: project, config: config)
+            return planReactNativeAndroid(project: project, config: config, credentials: credentials)
         case .nativeAndroid:
-            return planNativeAndroid(project: project, config: config)
+            return planNativeAndroid(project: project, config: config, credentials: credentials)
         case .expo:
             let androidDir = project.url.appendingPathComponent("android")
             guard DetectionFS.isDirectory(androidDir) else { throw PlanningError.needsExpoPrebuild }
-            return planReactNativeAndroid(project: project, config: config)
+            return planReactNativeAndroid(project: project, config: config, credentials: credentials)
         case .nativeIOS, .unknown:
             throw PlanningError.unsupported(framework: project.framework, action: .buildAndroidAAB)
         }
     }
 
-    private static func planFlutterAndroid(project: Project, config: ProjectConfig) -> PlannedBuild {
+    private static func planFlutterAndroid(
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> PlannedBuild {
         let cwd = project.url
         let pubGet = ProcessSpec(
             label: "flutter pub get",
@@ -353,14 +442,16 @@ enum CommandPlanner {
             arguments: ["pub", "get"],
             workingDirectory: cwd
         )
+        var appbundleArgs = ["build", "appbundle", "--release"]
+        appbundleArgs.append(contentsOf: signingDartDefines(config: config, credentials: credentials))
         let appbundle = ProcessSpec(
             label: "flutter build appbundle",
             executable: "flutter",
-            arguments: ["build", "appbundle", "--release"],
+            arguments: appbundleArgs,
             workingDirectory: cwd
         )
         return PlannedBuild(
-            steps: [pubGet, appbundle],
+            processSteps: [pubGet, appbundle],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: "app-release.aab",
@@ -372,17 +463,23 @@ enum CommandPlanner {
         )
     }
 
-    private static func planNativeAndroid(project: Project, config: ProjectConfig) -> PlannedBuild {
+    private static func planNativeAndroid(
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> PlannedBuild {
         let module = config.apps.android?.module ?? "app"
         let task = bundleTask(forFlavor: config.apps.android?.flavor)
+        var args = [":\(module):\(task)"]
+        args.append(contentsOf: signingGradleProperties(config: config, credentials: credentials))
         let gradle = ProcessSpec(
             label: "./gradlew :\(module):\(task)",
             executable: "./gradlew",
-            arguments: [":\(module):\(task)"],
+            arguments: args,
             workingDirectory: project.url
         )
         return PlannedBuild(
-            steps: [gradle],
+            processSteps: [gradle],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: "\(module)-release.aab",
@@ -394,7 +491,11 @@ enum CommandPlanner {
         )
     }
 
-    private static func planReactNativeAndroid(project: Project, config: ProjectConfig) -> PlannedBuild {
+    private static func planReactNativeAndroid(
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> PlannedBuild {
         let module = config.apps.android?.module ?? "app"
         let task = bundleTask(forFlavor: config.apps.android?.flavor)
         let pm = resolvePackageManager(project: project, config: config)
@@ -404,14 +505,16 @@ enum CommandPlanner {
             arguments: pm.installArguments,
             workingDirectory: project.url
         )
+        var args = [":\(module):\(task)"]
+        args.append(contentsOf: signingGradleProperties(config: config, credentials: credentials))
         let gradle = ProcessSpec(
             label: "./gradlew :\(module):\(task)",
             executable: "./gradlew",
-            arguments: [":\(module):\(task)"],
+            arguments: args,
             workingDirectory: project.url.appendingPathComponent("android")
         )
         return PlannedBuild(
-            steps: [install, gradle],
+            processSteps: [install, gradle],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: "\(module)-release.aab",
@@ -421,6 +524,47 @@ enum CommandPlanner {
                 )
             ]
         )
+    }
+
+    // MARK: - Android signing
+
+    /// Resolves the Android keystore credential referenced by the config.
+    static func resolveKeystore(
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> AndroidKeystoreSecret? {
+        guard let ref = config.apps.android?.signing?.keystoreRef, !ref.isEmpty,
+              let credential = credentials[ref],
+              case .androidKeystore(let secret) = credential.secret else {
+            return nil
+        }
+        return secret
+    }
+
+    /// `-P` properties consumed by `app/build.gradle` via `project.findProperty(...)`.
+    /// Keys: LP_KEYSTORE_FILE, LP_KEYSTORE_PASSWORD, LP_KEY_ALIAS, LP_KEY_PASSWORD.
+    private static func signingGradleProperties(
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> [String] {
+        guard let secret = resolveKeystore(config: config, credentials: credentials) else { return [] }
+        return [
+            "-PLP_KEYSTORE_FILE=\(secret.keystorePath)",
+            "-PLP_KEYSTORE_PASSWORD=\(secret.keystorePassword)",
+            "-PLP_KEY_ALIAS=\(secret.keyAlias)",
+            "-PLP_KEY_PASSWORD=\(secret.keyPassword)"
+        ]
+    }
+
+    /// Flutter forwards `--dart-define` to the runtime, but signing is read from
+    /// `android/key.properties` or env vars by build.gradle. We pass the same `-P`
+    /// arguments via `flutter build appbundle` — flutter passes unknown flags
+    /// through to gradle.
+    private static func signingDartDefines(
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) -> [String] {
+        signingGradleProperties(config: config, credentials: credentials)
     }
 
     static func resolvePackageManager(project: Project, config: ProjectConfig) -> PackageManager {

@@ -72,71 +72,42 @@ enum BuildEngine {
         var failed = false
         var cancelled = false
 
-        for (index, spec) in plan.steps.enumerated() {
+        for (index, step) in plan.steps.enumerated() {
             await MainActor.run {
                 session.currentStepIndex = index
                 session.stepStatuses[index] = .running
                 session.append(LogLine(
                     stream: .stdout,
-                    text: "▶ \(spec.label)",
+                    text: "▶ \(step.label)",
                     timestamp: Date()
                 ))
             }
-            await writer.writeHeader(
-                commandLabel: spec.label,
-                executable: spec.executable,
-                arguments: spec.arguments,
-                workingDirectory: spec.workingDirectory.path
-            )
 
-            let stream = ProcessRunner.run(spec, cancellation: session.cancellation)
-            var stepFailed = false
-            var stepCancelled = false
-
-            for await event in stream {
-                switch event {
-                case .started(_, _, let commandLine):
-                    await MainActor.run {
-                        session.resolvedCommandLines.append(commandLine)
-                    }
-                case .log(let line):
-                    await writer.write(line)
-                    await MainActor.run {
-                        session.append(line)
-                    }
-                case .exited(let code):
-                    if code != 0 {
-                        stepFailed = true
-                        await MainActor.run {
-                            session.failureReason = "Step \"\(spec.label)\" exited with code \(code)."
-                        }
-                    }
-                    await writer.writeFooter(exitCode: code, cancelled: false)
-                case .failed(let message):
-                    stepFailed = true
-                    await MainActor.run {
-                        session.failureReason = message
-                        session.append(LogLine(stream: .stderr, text: message, timestamp: Date()))
-                    }
-                    await writer.writeFailure(message)
-                    await writer.writeFooter(exitCode: nil, cancelled: false)
-                case .cancelled:
-                    stepCancelled = true
-                    await writer.writeFooter(exitCode: nil, cancelled: true)
-                }
+            let outcome: BuildStepResult
+            switch step {
+            case .process(let spec):
+                outcome = await runProcessStep(spec: spec, session: session, writer: writer)
+            case .task(_, let run):
+                outcome = await runTaskStep(label: step.label, run: run, session: session, writer: writer)
             }
 
-            if stepCancelled {
+            switch outcome {
+            case .succeeded:
+                await MainActor.run { session.stepStatuses[index] = .succeeded }
+            case .failed(let message):
+                failed = true
+                await MainActor.run {
+                    session.stepStatuses[index] = .failed
+                    if session.failureReason == nil {
+                        session.failureReason = message
+                    }
+                }
+            case .cancelled:
                 cancelled = true
                 await MainActor.run { session.stepStatuses[index] = .cancelled }
-                break
             }
-            if stepFailed {
-                failed = true
-                await MainActor.run { session.stepStatuses[index] = .failed }
-                break
-            }
-            await MainActor.run { session.stepStatuses[index] = .succeeded }
+
+            if failed || cancelled { break }
         }
 
         let foundArtifacts = scanArtifacts(plan: plan, project: project, jobId: session.job.id)
@@ -163,6 +134,89 @@ enum BuildEngine {
         await MainActor.run {
             onComplete(snapshot)
         }
+    }
+
+    private static func runProcessStep(
+        spec: ProcessSpec,
+        session: BuildSession,
+        writer: BuildLogWriter
+    ) async -> BuildStepResult {
+        await writer.writeHeader(
+            commandLabel: spec.label,
+            executable: spec.executable,
+            arguments: spec.arguments,
+            workingDirectory: spec.workingDirectory.path
+        )
+
+        var stepFailed = false
+        var stepCancelled = false
+        var failureMessage: String?
+
+        let stream = ProcessRunner.run(spec, cancellation: session.cancellation)
+        for await event in stream {
+            switch event {
+            case .started(_, _, let commandLine):
+                await MainActor.run { session.resolvedCommandLines.append(commandLine) }
+            case .log(let line):
+                await writer.write(line)
+                await MainActor.run { session.append(line) }
+            case .exited(let code):
+                if code != 0 {
+                    stepFailed = true
+                    failureMessage = "Step \"\(spec.label)\" exited with code \(code)."
+                }
+                await writer.writeFooter(exitCode: code, cancelled: false)
+            case .failed(let message):
+                stepFailed = true
+                failureMessage = message
+                let errorLine = LogLine(stream: .stderr, text: message, timestamp: Date())
+                await MainActor.run { session.append(errorLine) }
+                await writer.writeFailure(message)
+                await writer.writeFooter(exitCode: nil, cancelled: false)
+            case .cancelled:
+                stepCancelled = true
+                await writer.writeFooter(exitCode: nil, cancelled: true)
+            }
+        }
+
+        if stepCancelled { return .cancelled }
+        if stepFailed { return .failed(message: failureMessage ?? "process failed") }
+        return .succeeded
+    }
+
+    private static func runTaskStep(
+        label: String,
+        run: @Sendable (BuildTaskContext) async -> BuildStepResult,
+        session: BuildSession,
+        writer: BuildLogWriter
+    ) async -> BuildStepResult {
+        await writer.writeHeader(
+            commandLabel: label,
+            executable: "<launchpilot-task>",
+            arguments: [],
+            workingDirectory: ""
+        )
+
+        let cancellation = session.cancellation
+        let context = BuildTaskContext(
+            log: { line in
+                await writer.write(line)
+                await MainActor.run { session.append(line) }
+            },
+            isCancelled: { await cancellation.wasCancelled }
+        )
+
+        let result = await run(context)
+        switch result {
+        case .succeeded:
+            await writer.writeFooter(exitCode: 0, cancelled: false)
+        case .failed(let message):
+            await writer.writeFailure(message)
+            await writer.writeFooter(exitCode: nil, cancelled: false)
+        case .cancelled:
+            await writer.writeFooter(exitCode: nil, cancelled: true)
+        }
+        return result
     }
 
     private static func scanArtifacts(plan: PlannedBuild, project: Project, jobId: UUID) -> [BuildArtifact] {
