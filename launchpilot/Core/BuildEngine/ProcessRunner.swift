@@ -43,12 +43,15 @@ nonisolated enum ProcessEvent: Sendable {
 
 nonisolated enum ProcessRunnerError: Error, LocalizedError {
     case executableNotFound(String, searchedPath: String)
+    case relativeExecutableNotFound(String, resolvedPath: String, workingDirectory: URL)
     case workingDirectoryMissing(URL)
 
     var errorDescription: String? {
         switch self {
         case .executableNotFound(let name, let path):
             return "Could not find '\(name)' on PATH. Searched: \(path)"
+        case .relativeExecutableNotFound(let name, let resolved, let cwd):
+            return "Could not find '\(name)' relative to working directory \(cwd.path). Looked at: \(resolved)"
         case .workingDirectoryMissing(let url):
             return "Working directory does not exist: \(url.path)"
         }
@@ -61,7 +64,7 @@ nonisolated enum ProcessRunner {
             Task.detached {
                 do {
                     let env = await EnvironmentResolver.shared.environment(merging: spec.environment)
-                    let resolvedPath = try resolveExecutable(spec.executable, env: env)
+                    let resolvedPath = try resolveExecutable(spec.executable, env: env, workingDirectory: spec.workingDirectory)
 
                     guard FileManager.default.fileExists(atPath: spec.workingDirectory.path) else {
                         continuation.yield(.failed(message: ProcessRunnerError.workingDirectoryMissing(spec.workingDirectory).localizedDescription))
@@ -171,12 +174,19 @@ nonisolated enum ProcessRunner {
         }
     }
 
-    private static func resolveExecutable(_ name: String, env: [String: String]) throws -> String {
+    private static func resolveExecutable(_ name: String, env: [String: String], workingDirectory: URL) throws -> String {
         let path = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        if name.hasPrefix("/") || name.hasPrefix("./") || name.hasPrefix("../") {
+        if name.hasPrefix("/") {
             let url = URL(fileURLWithPath: name)
             guard FileManager.default.isExecutableFile(atPath: url.path) else {
                 throw ProcessRunnerError.executableNotFound(name, searchedPath: path)
+            }
+            return url.path
+        }
+        if name.hasPrefix("./") || name.hasPrefix("../") {
+            let url = URL(fileURLWithPath: name, relativeTo: workingDirectory).standardizedFileURL
+            guard FileManager.default.isExecutableFile(atPath: url.path) else {
+                throw ProcessRunnerError.relativeExecutableNotFound(name, resolvedPath: url.path, workingDirectory: workingDirectory)
             }
             return url.path
         }

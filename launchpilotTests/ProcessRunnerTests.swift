@@ -47,6 +47,39 @@ struct ProcessRunnerTests {
         #expect(exitCode != 0)
     }
 
+    @Test func resolvesRelativeExecutableAgainstWorkingDirectory() async throws {
+        let fm = FileManager.default
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("launchpilot-relexec-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+
+        let script = tmp.appendingPathComponent("hello.sh")
+        try "#!/bin/sh\necho relative-ok\n".write(to: script, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+
+        let spec = ProcessSpec(
+            label: "./hello.sh",
+            executable: "./hello.sh",
+            arguments: [],
+            workingDirectory: tmp
+        )
+
+        var collected: [String] = []
+        var exitCode: Int32?
+        for await event in ProcessRunner.run(spec) {
+            switch event {
+            case .log(let line): collected.append(line.text)
+            case .exited(let code): exitCode = code
+            case .failed(let msg): Issue.record("unexpected failure: \(msg)")
+            default: break
+            }
+        }
+
+        #expect(exitCode == 0)
+        #expect(collected.contains("relative-ok"))
+    }
+
     @Test func reportsExecutableNotFound() async throws {
         let spec = ProcessSpec(
             label: "missing",
