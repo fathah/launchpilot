@@ -15,19 +15,26 @@ final class AppState {
     var recentJobs: [BuildJob] = []
     var selectedBuildId: UUID?
 
+    var credentials: [Credential] = []
+    var editingCredential: Credential?
+    var addingCredentialKind: CredentialKind?
+
     private let projectStore: ProjectStore
     private let preferences: PreferencesStore
     private let buildHistory: BuildHistoryStore
+    private let credentialStore: CredentialStore
     private var scopedURLs: [UUID: URL] = [:]
 
     init(
         projectStore: ProjectStore = ProjectStore(),
         preferences: PreferencesStore = PreferencesStore(),
-        buildHistory: BuildHistoryStore = BuildHistoryStore()
+        buildHistory: BuildHistoryStore = BuildHistoryStore(),
+        credentialStore: CredentialStore = CredentialStore()
     ) {
         self.projectStore = projectStore
         self.preferences = preferences
         self.buildHistory = buildHistory
+        self.credentialStore = credentialStore
         self.selectedSection = preferences.selectedSidebarSection
         self.selectedProjectId = preferences.selectedProjectId
     }
@@ -59,6 +66,31 @@ final class AppState {
             self.recentJobs = jobs.sorted(by: { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) })
         } catch {
             self.lastError = "Failed to load build history: \(error.localizedDescription)"
+        }
+
+        reloadCredentials()
+    }
+
+    func reloadCredentials() {
+        credentials = credentialStore.list()
+    }
+
+    func saveCredential(_ credential: Credential, isNew: Bool, originalRef: String? = nil) throws {
+        if let originalRef, originalRef != credential.ref {
+            try credentialStore.rename(from: originalRef, to: credential.ref)
+            try credentialStore.save(credential, isNew: false)
+        } else {
+            try credentialStore.save(credential, isNew: isNew)
+        }
+        reloadCredentials()
+    }
+
+    func deleteCredential(_ credential: Credential) {
+        do {
+            try credentialStore.delete(ref: credential.ref)
+            reloadCredentials()
+        } catch {
+            lastError = "Failed to delete credential: \(error.localizedDescription)"
         }
     }
 
@@ -238,11 +270,13 @@ final class AppState {
     func startBuild(action: BuildAction, environment: String = "production", for project: Project) {
         do {
             let config = try ensureConfig(for: project)
+            let credentialMap = Dictionary(uniqueKeysWithValues: credentials.map { ($0.ref, $0) })
             let session = try BuildEngine.start(
                 project: project,
                 action: action,
                 environment: environment,
                 config: config,
+                credentials: credentialMap,
                 onComplete: { [weak self] job in
                     self?.recordCompletion(job: job)
                 }

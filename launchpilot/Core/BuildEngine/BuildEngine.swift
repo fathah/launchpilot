@@ -7,9 +7,10 @@ enum BuildEngine {
         action: BuildAction,
         environment: String,
         config: ProjectConfig,
+        credentials: [String: Credential] = [:],
         onComplete: @MainActor @escaping (BuildJob) -> Void
     ) throws -> BuildSession {
-        let plan = try CommandPlanner.plan(action: action, project: project, config: config)
+        let plan = try CommandPlanner.plan(action: action, project: project, config: config, credentials: credentials)
         let platform: Platform = (action == .buildIOSIPA) ? .iOS :
             (action == .buildAndroidAAB ? .android :
             (project.framework.supportsIOS ? .iOS : .android))
@@ -139,6 +140,10 @@ enum BuildEngine {
         }
 
         let foundArtifacts = scanArtifacts(plan: plan, project: project, jobId: session.job.id)
+
+        for url in plan.cleanupPaths {
+            try? FileManager.default.removeItem(at: url)
+        }
 
         await MainActor.run {
             session.completedAt = Date()

@@ -50,11 +50,7 @@ struct RootView: View {
                 symbol: "shippingbox"
             )
         case .credentials:
-            PlaceholderView(
-                title: "Credentials",
-                subtitle: "Apple, Google Play, and keystore credentials are coming next.",
-                symbol: "key"
-            )
+            CredentialsView()
         case .settings:
             SettingsView()
         }

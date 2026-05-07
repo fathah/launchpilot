@@ -20,6 +20,8 @@ struct ProjectDetailView: View {
                 validationSection
 
                 actionsSection
+
+                publishingSection
             }
             .padding(24)
             .frame(maxWidth: 900, alignment: .leading)
@@ -150,6 +152,100 @@ struct ProjectDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var publishingSection: some View {
+        if project.framework.supportsIOS, config?.apps.ios?.enabled == true {
+            SectionCard(title: "Publish iOS") {
+                VStack(alignment: .leading, spacing: 12) {
+                    appleCredentialPicker
+                    HStack(spacing: 12) {
+                        Button {
+                            appState.startBuild(action: .publishTestFlight, for: project)
+                        } label: {
+                            Label("Archive + Upload to TestFlight", systemImage: "paperplane.fill")
+                        }
+                        .disabled(!canUploadToApple)
+                        .buttonStyle(.borderedProminent)
+
+                        Button {
+                            appState.startBuild(action: .publishAppStore, for: project)
+                        } label: {
+                            Label("Archive + Upload to App Store", systemImage: "icloud.and.arrow.up")
+                        }
+                        .disabled(!canUploadToApple)
+                    }
+                    Text("Runs the iOS archive + export, then `xcrun altool --upload-app` with the selected key. The .p8 is staged in a temp dir and removed when the build finishes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var appleCredentials: [Credential] {
+        appState.credentials.filter { $0.kind == .appleAPIKey }
+    }
+
+    private var selectedAppleRef: String? {
+        config?.publishing.apple?.apiKeyRef
+    }
+
+    private var canUploadToApple: Bool {
+        guard let ref = selectedAppleRef, !ref.isEmpty else { return false }
+        return appleCredentials.contains(where: { $0.ref == ref })
+    }
+
+    @ViewBuilder
+    private var appleCredentialPicker: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("App Store Connect key")
+                .frame(width: 180, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            if appleCredentials.isEmpty {
+                HStack(spacing: 8) {
+                    Text("No Apple keys saved")
+                        .foregroundStyle(.secondary)
+                    Button("Open Credentials") {
+                        appState.setSection(.credentials)
+                    }
+                    .buttonStyle(.link)
+                }
+            } else {
+                Picker("", selection: Binding<String>(
+                    get: { selectedAppleRef ?? "" },
+                    set: { setAppleApiKeyRef($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("None").tag("")
+                    ForEach(appleCredentials) { credential in
+                        Text("\(credential.displayName) — \(credential.ref)")
+                            .tag(credential.ref)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 360)
+            }
+            Spacer()
+        }
+    }
+
+    private func setAppleApiKeyRef(_ ref: String?) {
+        guard var cfg = config else { return }
+        if cfg.publishing.apple == nil {
+            cfg.publishing.apple = ProjectConfig.ApplePublishing(enabled: true, apiKeyRef: ref, appId: nil)
+        } else {
+            cfg.publishing.apple?.apiKeyRef = ref
+            cfg.publishing.apple?.enabled = true
+        }
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
         }
     }
 

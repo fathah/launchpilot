@@ -3,6 +3,13 @@ import Foundation
 struct PlannedBuild: Sendable {
     let steps: [ProcessSpec]
     let expectedArtifacts: [PlannedArtifact]
+    let cleanupPaths: [URL]
+
+    init(steps: [ProcessSpec], expectedArtifacts: [PlannedArtifact], cleanupPaths: [URL] = []) {
+        self.steps = steps
+        self.expectedArtifacts = expectedArtifacts
+        self.cleanupPaths = cleanupPaths
+    }
 }
 
 struct PlannedArtifact: Sendable {
@@ -30,15 +37,86 @@ enum PlanningError: Error, LocalizedError {
 }
 
 enum CommandPlanner {
-    static func plan(action: BuildAction, project: Project, config: ProjectConfig) throws -> PlannedBuild {
+    static func plan(
+        action: BuildAction,
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential] = [:]
+    ) throws -> PlannedBuild {
         switch action {
         case .buildIOSIPA, .archiveOnly where project.framework.supportsIOS:
             return try planIOS(project: project, config: config)
         case .buildAndroidAAB, .archiveOnly:
             return try planAndroid(project: project, config: config)
-        case .publishTestFlight, .publishAppStore, .publishGooglePlay:
+        case .publishTestFlight, .publishAppStore:
+            return try planAppleUpload(action: action, project: project, config: config, credentials: credentials)
+        case .publishGooglePlay:
             throw PlanningError.unsupported(framework: project.framework, action: action)
         }
+    }
+
+    // MARK: - Apple upload (TestFlight / App Store)
+
+    private static func planAppleUpload(
+        action: BuildAction,
+        project: Project,
+        config: ProjectConfig,
+        credentials: [String: Credential]
+    ) throws -> PlannedBuild {
+        guard project.framework.supportsIOS else {
+            throw PlanningError.unsupported(framework: project.framework, action: action)
+        }
+        guard let ref = config.publishing.apple?.apiKeyRef, !ref.isEmpty else {
+            throw PlanningError.missing("publishing.apple.api_key_ref — pick an Apple credential first.")
+        }
+        guard let credential = credentials[ref],
+              case .appleAPIKey(let secret) = credential.secret else {
+            throw PlanningError.missing("Apple API key '\(ref)' is not stored. Add it under Credentials.")
+        }
+
+        let archivePlan = try planIOS(project: project, config: config)
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launchpilot-upload-\(UUID().uuidString)", isDirectory: true)
+        let privateKeysDir = tempDir.appendingPathComponent("private_keys", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: privateKeysDir, withIntermediateDirectories: true)
+            let p8URL = privateKeysDir.appendingPathComponent("AuthKey_\(secret.keyId).p8")
+            try secret.p8Contents.write(to: p8URL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p8URL.path)
+        } catch {
+            throw PlanningError.missing("could not stage Apple API key: \(error.localizedDescription)")
+        }
+
+        let ipaDirRel = config.apps.ios?.build?.ipaOutputDir ?? "build/ios/ipa"
+        let ipaDir = project.url.appendingPathComponent(ipaDirRel)
+        let issuerEscaped = secret.issuerId.replacingOccurrences(of: "\"", with: "\\\"")
+        let keyEscaped = secret.keyId.replacingOccurrences(of: "\"", with: "\\\"")
+        let dirEscaped = ipaDir.path.replacingOccurrences(of: "\"", with: "\\\"")
+
+        let script = """
+        set -e
+        IPA=$(ls "\(dirEscaped)"/*.ipa 2>/dev/null | head -n 1)
+        if [ -z "$IPA" ]; then
+          echo "launchpilot: no .ipa found in \(dirEscaped). Did the export step run?" >&2
+          exit 1
+        fi
+        echo "launchpilot: uploading $IPA"
+        xcrun altool --upload-app --type ios -f "$IPA" --apiKey "\(keyEscaped)" --apiIssuer "\(issuerEscaped)"
+        """
+
+        let upload = ProcessSpec(
+            label: action == .publishAppStore ? "altool upload (App Store)" : "altool upload (TestFlight)",
+            executable: "/bin/sh",
+            arguments: ["-c", script],
+            workingDirectory: tempDir
+        )
+
+        return PlannedBuild(
+            steps: archivePlan.steps + [upload],
+            expectedArtifacts: archivePlan.expectedArtifacts,
+            cleanupPaths: [tempDir]
+        )
     }
 
     // MARK: - iOS
@@ -93,6 +171,7 @@ enum CommandPlanner {
         guard !scheme.isEmpty else { throw PlanningError.missing("iOS scheme") }
         let configuration = ios?.configuration ?? "Release"
         let archiveRel = ios?.build?.archivePath ?? "build/ios/archive/App.xcarchive"
+        let ipaDirRel = ios?.build?.ipaOutputDir ?? "build/ios/ipa"
 
         var args: [String] = ["archive"]
         if let workspace = ios?.workspace, !workspace.isEmpty {
@@ -115,14 +194,28 @@ enum CommandPlanner {
             arguments: args,
             workingDirectory: project.url
         )
+
+        let export = try makeExportSpec(
+            project: project,
+            config: config,
+            archiveRel: archiveRel,
+            ipaDirRel: ipaDirRel
+        )
+
         return PlannedBuild(
-            steps: [archive],
+            steps: [archive, export],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: URL(fileURLWithPath: archiveRel).lastPathComponent,
                     type: .xcarchive,
                     platform: .iOS,
                     relativePath: URL(fileURLWithPath: archiveRel).deletingLastPathComponent().relativePath
+                ),
+                PlannedArtifact(
+                    name: "App.ipa",
+                    type: .ipa,
+                    platform: .iOS,
+                    relativePath: ipaDirRel
                 )
             ]
         )
@@ -134,6 +227,7 @@ enum CommandPlanner {
         guard !scheme.isEmpty else { throw PlanningError.missing("iOS scheme") }
         let configuration = ios?.configuration ?? "Release"
         let archiveRel = ios?.build?.archivePath ?? "ios/build/archive/App.xcarchive"
+        let ipaDirRel = ios?.build?.ipaOutputDir ?? "ios/build/ipa"
         let iosDir = project.url.appendingPathComponent("ios")
 
         let pm = resolvePackageManager(project: project, config: config)
@@ -173,16 +267,59 @@ enum CommandPlanner {
             workingDirectory: project.url
         )
 
+        let export = try makeExportSpec(
+            project: project,
+            config: config,
+            archiveRel: archiveRel,
+            ipaDirRel: ipaDirRel
+        )
+
         return PlannedBuild(
-            steps: [install, pod, archive],
+            steps: [install, pod, archive, export],
             expectedArtifacts: [
                 PlannedArtifact(
                     name: URL(fileURLWithPath: archiveRel).lastPathComponent,
                     type: .xcarchive,
                     platform: .iOS,
                     relativePath: URL(fileURLWithPath: archiveRel).deletingLastPathComponent().relativePath
+                ),
+                PlannedArtifact(
+                    name: "App.ipa",
+                    type: .ipa,
+                    platform: .iOS,
+                    relativePath: ipaDirRel
                 )
             ]
+        )
+    }
+
+    // MARK: - Export helpers
+
+    private static func makeExportSpec(
+        project: Project,
+        config: ProjectConfig,
+        archiveRel: String,
+        ipaDirRel: String
+    ) throws -> ProcessSpec {
+        let exportPlistRel = "build/launchpilot/ExportOptions.plist"
+        let plistURL = project.url.appendingPathComponent(exportPlistRel)
+        let options = ExportOptionsWriter.from(config: config)
+        do {
+            try ExportOptionsWriter.write(at: plistURL, options: options)
+        } catch {
+            throw PlanningError.missing("could not write ExportOptions.plist: \(error.localizedDescription)")
+        }
+        return ProcessSpec(
+            label: "xcodebuild -exportArchive",
+            executable: "xcodebuild",
+            arguments: [
+                "-exportArchive",
+                "-archivePath", archiveRel,
+                "-exportPath", ipaDirRel,
+                "-exportOptionsPlist", exportPlistRel,
+                "-allowProvisioningUpdates"
+            ],
+            workingDirectory: project.url
         )
     }
 
