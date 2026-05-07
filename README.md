@@ -29,7 +29,7 @@ Select project → Detect stack → Configure once → Build → Archive → Pub
 
 ## Features
 
-- **Native macOS app** built with SwiftUI — no Electron, no web wrappers
+- **Native macOS app** built with SwiftUI.
 - **Local-first** — runs builds on your Mac using local toolchains
 - **No login required** — works fully offline
 - **Auto framework detection** for Flutter, Expo, React Native CLI, native iOS, and native Android
