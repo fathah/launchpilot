@@ -499,19 +499,12 @@ struct ProjectDetailView: View {
                         Button {
                             appState.startBuild(action: .publishTestFlight, for: project)
                         } label: {
-                            Label("Archive + Upload to TestFlight", systemImage: "paperplane.fill")
+                            Label("Archive + Upload to App Store Connect", systemImage: "icloud.and.arrow.up")
                         }
                         .disabled(!canUploadToApple)
                         .buttonStyle(.borderedProminent)
-
-                        Button {
-                            appState.startBuild(action: .publishAppStore, for: project)
-                        } label: {
-                            Label("Archive + Upload to App Store", systemImage: "icloud.and.arrow.up")
-                        }
-                        .disabled(!canUploadToApple)
                     }
-                    Text("Runs the iOS archive + export, then `xcrun altool --upload-app` with the selected key. The .p8 is staged in a temp dir and removed when the build finishes.")
+                    Text("Runs the iOS archive + export, then `xcrun altool --upload-app` with the selected key. The build appears in TestFlight; promote it to the App Store from App Store Connect. The .p8 is staged in a temp dir and removed when the build finishes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -189,7 +189,7 @@ enum CommandPlanner {
         """
 
         let upload = ProcessSpec(
-            label: action == .publishAppStore ? "altool upload (App Store)" : "altool upload (TestFlight)",
+            label: "altool upload (App Store Connect)",
             executable: "/bin/sh",
             arguments: ["-c", script],
             workingDirectory: tempDir
