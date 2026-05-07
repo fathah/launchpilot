@@ -1,0 +1,98 @@
+name: Release macOS Build
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    env:
+      SCHEME: launchpilot
+      CONFIGURATION: Release
+      PROJECT: launchpilot.xcodeproj
+      APP_NAME: launchpilot
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Read app version
+        id: version
+        run: |
+          MARKETING=$(grep -m1 "MARKETING_VERSION" $PROJECT/project.pbxproj | sed -E 's/.*= ([^;]+);/\1/' | tr -d ' ')
+          BUILD_NUM=${GITHUB_RUN_NUMBER}
+          TAG="v${MARKETING}-${BUILD_NUM}-$(echo ${GITHUB_SHA} | cut -c1-7)"
+          echo "marketing=${MARKETING}" >> $GITHUB_OUTPUT
+          echo "build=${BUILD_NUM}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination 'generic/platform=macOS' \
+            -archivePath "build/${APP_NAME}.xcarchive" \
+            CURRENT_PROJECT_VERSION=${{ steps.version.outputs.build }} \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+      - name: Export .app from archive
+        run: |
+          mkdir -p build/export
+          cp -R "build/${APP_NAME}.xcarchive/Products/Applications/${APP_NAME}.app" "build/export/${APP_NAME}.app"
+
+      - name: Ad-hoc sign (so Gatekeeper allows local launch)
+        run: codesign --force --deep --sign - "build/export/${APP_NAME}.app"
+
+      - name: Create zip
+        run: |
+          cd build/export
+          ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "../../${APP_NAME}-${{ steps.version.outputs.tag }}.zip"
+
+      - name: Create DMG
+        run: |
+          mkdir -p build/dmg
+          cp -R "build/export/${APP_NAME}.app" build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create \
+            -volname "${APP_NAME}" \
+            -srcfolder build/dmg \
+            -ov -format UDZO \
+            "${APP_NAME}-${{ steps.version.outputs.tag }}.dmg"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ env.APP_NAME }} ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            Automated macOS build from branch `release` (commit ${{ github.sha }}).
+
+            **Note:** This build is unsigned (ad-hoc signed only). On first launch macOS will block it — right-click the app and choose **Open**, then confirm in the dialog. Or run:
+
+            ```
+            xattr -dr com.apple.quarantine /Applications/${{ env.APP_NAME }}.app
+            ```
+          files: |
+            launchpilot-${{ steps.version.outputs.tag }}.zip
+            launchpilot-${{ steps.version.outputs.tag }}.dmg

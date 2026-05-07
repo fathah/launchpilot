@@ -163,12 +163,12 @@ Frameworks and publishers are implemented as adapters behind `FrameworkAdapter` 
 ## Roadmap
 
 - ✅ Phase 1 — App shell, project picker, local DB, Keychain wrapper
-- 🚧 Phase 2 — Framework detection + YAML config editor
-- ⏳ Phase 3 — Build engine with live logs
-- ⏳ Phase 4–5 — iOS and Android build support
-- ⏳ Phase 6 — Framework-specific adapters
-- ⏳ Phase 7 — TestFlight and Google Play publishing
-- ⏳ Phase 8 — Error diagnosis, polish, docs
+- ✅ Phase 2 — Framework detection + YAML config editor
+- ✅ Phase 3 — Build engine with live logs
+- ✅ Phase 4–5 — iOS and Android build support
+- ✅ Phase 6 — Framework-specific adapters
+- 🚧 Phase 7 — TestFlight and Google Play publishing _(Google Play done; App Store / TestFlight in progress)_
+- 🚧 Phase 8 — Error diagnosis, polish, docs
 - ⏳ Phase 9 — Parallel builds, auto screenshots, optional AI features
 
 See [PROJECT.md](PROJECT.md) for the detailed phase breakdown.
