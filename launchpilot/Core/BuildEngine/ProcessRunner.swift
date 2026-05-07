@@ -125,6 +125,27 @@ nonisolated enum ProcessRunner {
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
 
+                    // Drain any data the kernel buffered but the readability
+                    // handlers didn't get a chance to consume before exit.
+                    let stdoutTail = stdoutPipe.fileHandleForReading.availableData
+                    if !stdoutTail.isEmpty, let text = String(data: stdoutTail, encoding: .utf8) {
+                        stdoutBuffer += text
+                    }
+                    let stderrTail = stderrPipe.fileHandleForReading.availableData
+                    if !stderrTail.isEmpty, let text = String(data: stderrTail, encoding: .utf8) {
+                        stderrBuffer += text
+                    }
+
+                    while let newlineIdx = stdoutBuffer.firstIndex(of: "\n") {
+                        let line = String(stdoutBuffer[..<newlineIdx])
+                        stdoutBuffer.removeSubrange(...newlineIdx)
+                        continuation.yield(.log(LogLine(stream: .stdout, text: line, timestamp: Date())))
+                    }
+                    while let newlineIdx = stderrBuffer.firstIndex(of: "\n") {
+                        let line = String(stderrBuffer[..<newlineIdx])
+                        stderrBuffer.removeSubrange(...newlineIdx)
+                        continuation.yield(.log(LogLine(stream: .stderr, text: line, timestamp: Date())))
+                    }
                     if !stdoutBuffer.isEmpty {
                         continuation.yield(.log(LogLine(stream: .stdout, text: stdoutBuffer, timestamp: Date())))
                     }

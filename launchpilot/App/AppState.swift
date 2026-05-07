@@ -239,7 +239,51 @@ final class AppState {
            let pm = PackageManager.detect(at: url) {
             defaults.project.packageManager = pm.rawValue
         }
+        let detectedEnvs = EnvironmentDetector.detect(at: url, framework: project.framework)
+        if !detectedEnvs.isEmpty {
+            defaults.environments = environmentDict(
+                from: detectedEnvs,
+                iosBundleId: defaults.apps.ios?.bundleId,
+                androidPackage: defaults.apps.android?.packageName,
+                iosEnabled: defaults.apps.ios != nil,
+                androidEnabled: defaults.apps.android != nil
+            )
+        }
         return try ConfigManager.ensure(defaults, at: url)
+    }
+
+    private func environmentDict(
+        from detected: [EnvironmentDetector.DetectedEnvironment],
+        iosBundleId: String?,
+        androidPackage: String?,
+        iosEnabled: Bool,
+        androidEnabled: Bool
+    ) -> [String: ProjectConfig.EnvironmentConfig] {
+        var dict: [String: ProjectConfig.EnvironmentConfig] = [:]
+        for env in detected {
+            let track: String = {
+                switch env.key {
+                case "production": return "production"
+                case "beta": return "beta"
+                case "staging": return "internal"
+                default: return "internal"
+                }
+            }()
+            let destination: String? = (env.key == "beta") ? "testflight" : nil
+            dict[env.key] = ProjectConfig.EnvironmentConfig(
+                displayName: env.displayName,
+                ios: iosEnabled ? ProjectConfig.IOSEnvironmentOverride(
+                    bundleId: iosBundleId,
+                    exportMethod: "app-store",
+                    destination: destination
+                ) : nil,
+                android: androidEnabled ? ProjectConfig.AndroidEnvironmentOverride(
+                    packageName: androidPackage,
+                    track: track
+                ) : nil
+            )
+        }
+        return dict
     }
 
     func readConfig(for project: Project) throws -> ProjectConfig {

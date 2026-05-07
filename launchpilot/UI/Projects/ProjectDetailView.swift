@@ -1,5 +1,18 @@
 import SwiftUI
 
+enum ProjectDetailTab: String, CaseIterable, Identifiable {
+    case overview, environment, ios, android
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .overview: return "Overview"
+        case .environment: return "Environment"
+        case .ios: return "iOS"
+        case .android: return "Android"
+        }
+    }
+}
+
 struct ProjectDetailView: View {
     @Environment(AppState.self) private var appState
     let project: Project
@@ -7,30 +20,51 @@ struct ProjectDetailView: View {
     @State private var config: ProjectConfig?
     @State private var configError: String?
     @State private var isGenerating = false
+    @State private var selectedTab: ProjectDetailTab = .overview
+
+    private var availableTabs: [ProjectDetailTab] {
+        var tabs: [ProjectDetailTab] = [.overview, .environment]
+        if project.framework.supportsIOS { tabs.append(.ios) }
+        if project.framework.supportsAndroid { tabs.append(.android) }
+        return tabs
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
-
-                summarySection
-
-                configSection
-
-                environmentSection
-
-                validationSection
-
-                actionsSection
-
-                androidSigningSection
-
-                publishingSection
-
-                publishingAndroidSection
+                Picker("", selection: $selectedTab) {
+                    ForEach(availableTabs) { tab in
+                        Text(tab.title).tag(tab)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
             }
-            .padding(24)
-            .frame(maxWidth: 900, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    switch selectedTab {
+                    case .overview:
+                        summarySection
+                        configSection
+                        validationSection
+                    case .environment:
+                        environmentSection
+                    case .ios:
+                        iosTab
+                    case .android:
+                        androidTab
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: 900, alignment: .leading)
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle(project.name)
@@ -56,8 +90,82 @@ struct ProjectDetailView: View {
             }
         }
         .task(id: project.id) {
+            selectedTab = .overview
             loadConfig()
             appState.refreshEnvironment(for: project)
+        }
+    }
+
+    @ViewBuilder
+    private var iosTab: some View {
+        if project.framework.supportsIOS {
+            iosBuildSection
+            publishingSection
+            if config?.apps.ios?.enabled != true {
+                Text("iOS is not enabled for this project. Enable it in launchpilot.yaml to build or publish.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
+        } else {
+            Text("This framework does not support iOS builds.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var androidTab: some View {
+        if project.framework.supportsAndroid {
+            androidBuildSection
+            androidSigningSection
+            publishingAndroidSection
+            if config?.apps.android?.enabled != true {
+                Text("Android is not enabled for this project. Enable it in launchpilot.yaml to build or publish.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
+        } else {
+            Text("This framework does not support Android builds.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var iosBuildSection: some View {
+        SectionCard(title: "Build iOS") {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    appState.startBuild(action: .buildIOSIPA, for: project)
+                } label: {
+                    Label("Archive iOS", systemImage: "applelogo")
+                }
+                .disabled(config?.apps.ios?.enabled != true)
+                .buttonStyle(.borderedProminent)
+                Text("Builds run on your Mac using the same tools you'd use in Terminal. Logs and artifacts are saved to ~/Library/Application Support/launchpilot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var androidBuildSection: some View {
+        SectionCard(title: "Build Android") {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    appState.startBuild(action: .buildAndroidAAB, for: project)
+                } label: {
+                    Label("Build Android AAB", systemImage: "smartphone")
+                }
+                .disabled(config?.apps.android?.enabled != true)
+                .buttonStyle(.borderedProminent)
+                Text("Builds run on your Mac using the same tools you'd use in Terminal. Logs and artifacts are saved to ~/Library/Application Support/launchpilot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -515,33 +623,6 @@ struct ProjectDetailView: View {
             config = cfg
         } catch {
             configError = error.localizedDescription
-        }
-    }
-
-    private var actionsSection: some View {
-        SectionCard(title: "Build") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    Button {
-                        appState.startBuild(action: .buildIOSIPA, for: project)
-                    } label: {
-                        Label("Archive iOS", systemImage: "applelogo")
-                    }
-                    .disabled(!project.framework.supportsIOS || config?.apps.ios?.enabled != true)
-                    .buttonStyle(.borderedProminent)
-
-                    Button {
-                        appState.startBuild(action: .buildAndroidAAB, for: project)
-                    } label: {
-                        Label("Build Android AAB", systemImage: "smartphone")
-                    }
-                    .disabled(!project.framework.supportsAndroid || config?.apps.android?.enabled != true)
-                    .buttonStyle(.bordered)
-                }
-                Text("Builds run on your Mac using the same tools you'd use in Terminal. Logs and artifacts are saved to ~/Library/Application Support/launchpilot.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
