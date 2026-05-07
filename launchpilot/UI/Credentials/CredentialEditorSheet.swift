@@ -568,7 +568,7 @@ private struct KeystoreSection: View {
                         "**If this is your first release**, you can create one by running this in Terminal:",
                         "`keytool -genkey -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias myapp`",
                         "**Critical:** back this file up somewhere safe (password manager, encrypted drive). If you lose it, you can never update your app on Play Store again — you'd have to publish as a new app.",
-                        "launchpilot only stores the path to this file. The keystore itself stays where it is on disk."
+                        "**Launch Pilot** only stores the path to this file. The keystore itself stays where it is on disk."
                     ],
                     link: nil
                 )

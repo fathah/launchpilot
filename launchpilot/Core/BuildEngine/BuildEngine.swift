@@ -12,7 +12,7 @@ enum BuildEngine {
     ) throws -> BuildSession {
         let plan = try CommandPlanner.plan(action: action, project: project, config: config, credentials: credentials)
         let platform: Platform = (action == .buildIOSIPA) ? .iOS :
-            (action == .buildAndroidAAB ? .android :
+            ((action == .buildAndroidAAB || action == .buildAndroidAPK) ? .android :
             (project.framework.supportsIOS ? .iOS : .android))
 
         let job = BuildJob(

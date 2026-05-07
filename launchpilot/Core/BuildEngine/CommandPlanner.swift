@@ -54,7 +54,9 @@ enum CommandPlanner {
         case .buildIOSIPA, .archiveOnly where project.framework.supportsIOS:
             return try planIOS(project: project, config: config)
         case .buildAndroidAAB, .archiveOnly:
-            return try planAndroid(project: project, config: config, credentials: credentials)
+            return try planAndroid(project: project, config: config, credentials: credentials, artifactType: .aab)
+        case .buildAndroidAPK:
+            return try planAndroid(project: project, config: config, credentials: credentials, artifactType: .apk)
         case .publishTestFlight, .publishAppStore:
             return try planAppleUpload(action: action, project: project, config: config, credentials: credentials)
         case .publishGooglePlay:
@@ -84,7 +86,7 @@ enum CommandPlanner {
         }
         let track = config.publishing.googlePlay?.defaultTrack ?? "internal"
 
-        let aabPlan = try planAndroid(project: project, config: config, credentials: credentials)
+        let aabPlan = try planAndroid(project: project, config: config, credentials: credentials, artifactType: .aab)
         let aabRelativePath = aabPlan.expectedArtifacts
             .first(where: { $0.type == .aab })?
             .relativePath ?? "build/app/outputs/bundle/release"
@@ -409,31 +411,34 @@ enum CommandPlanner {
     private static func planAndroid(
         project: Project,
         config: ProjectConfig,
-        credentials: [String: Credential]
+        credentials: [String: Credential],
+        artifactType: BuildArtifact.ArtifactType
     ) throws -> PlannedBuild {
         guard config.apps.android?.enabled == true else {
             throw PlanningError.missing("Android is not enabled in launchpilot.yaml")
         }
+        let action: BuildAction = (artifactType == .apk) ? .buildAndroidAPK : .buildAndroidAAB
         switch project.framework {
         case .flutter:
-            return planFlutterAndroid(project: project, config: config, credentials: credentials)
+            return planFlutterAndroid(project: project, config: config, credentials: credentials, artifactType: artifactType)
         case .reactNative:
-            return planReactNativeAndroid(project: project, config: config, credentials: credentials)
+            return planReactNativeAndroid(project: project, config: config, credentials: credentials, artifactType: artifactType)
         case .nativeAndroid:
-            return planNativeAndroid(project: project, config: config, credentials: credentials)
+            return planNativeAndroid(project: project, config: config, credentials: credentials, artifactType: artifactType)
         case .expo:
             let androidDir = project.url.appendingPathComponent("android")
             guard DetectionFS.isDirectory(androidDir) else { throw PlanningError.needsExpoPrebuild }
-            return planReactNativeAndroid(project: project, config: config, credentials: credentials)
+            return planReactNativeAndroid(project: project, config: config, credentials: credentials, artifactType: artifactType)
         case .nativeIOS, .unknown:
-            throw PlanningError.unsupported(framework: project.framework, action: .buildAndroidAAB)
+            throw PlanningError.unsupported(framework: project.framework, action: action)
         }
     }
 
     private static func planFlutterAndroid(
         project: Project,
         config: ProjectConfig,
-        credentials: [String: Credential]
+        credentials: [String: Credential],
+        artifactType: BuildArtifact.ArtifactType
     ) -> PlannedBuild {
         let cwd = project.url
         let pubGet = ProcessSpec(
@@ -442,34 +447,42 @@ enum CommandPlanner {
             arguments: ["pub", "get"],
             workingDirectory: cwd
         )
-        var appbundleArgs = ["build", "appbundle", "--release"]
-        appbundleArgs.append(contentsOf: signingDartDefines(config: config, credentials: credentials))
-        let appbundle = ProcessSpec(
-            label: "flutter build appbundle",
+        let isAPK = (artifactType == .apk)
+        let subcommand = isAPK ? "apk" : "appbundle"
+        var buildArgs = ["build", subcommand, "--release"]
+        buildArgs.append(contentsOf: signingDartDefines(config: config, credentials: credentials))
+        let build = ProcessSpec(
+            label: "flutter build \(subcommand)",
             executable: "flutter",
-            arguments: appbundleArgs,
+            arguments: buildArgs,
             workingDirectory: cwd
         )
+        let expected: PlannedArtifact = isAPK ? PlannedArtifact(
+            name: "app-release.apk",
+            type: .apk,
+            platform: .android,
+            relativePath: "build/app/outputs/flutter-apk"
+        ) : PlannedArtifact(
+            name: "app-release.aab",
+            type: .aab,
+            platform: .android,
+            relativePath: "build/app/outputs/bundle/release"
+        )
         return PlannedBuild(
-            processSteps: [pubGet, appbundle],
-            expectedArtifacts: [
-                PlannedArtifact(
-                    name: "app-release.aab",
-                    type: .aab,
-                    platform: .android,
-                    relativePath: "build/app/outputs/bundle/release"
-                )
-            ]
+            processSteps: [pubGet, build],
+            expectedArtifacts: [expected]
         )
     }
 
     private static func planNativeAndroid(
         project: Project,
         config: ProjectConfig,
-        credentials: [String: Credential]
+        credentials: [String: Credential],
+        artifactType: BuildArtifact.ArtifactType
     ) -> PlannedBuild {
         let module = config.apps.android?.module ?? "app"
-        let task = bundleTask(forFlavor: config.apps.android?.flavor)
+        let flavor = config.apps.android?.flavor
+        let task = gradleTask(forFlavor: flavor, artifactType: artifactType)
         var args = [":\(module):\(task)"]
         args.append(contentsOf: signingGradleProperties(config: config, credentials: credentials))
         let gradle = ProcessSpec(
@@ -480,24 +493,19 @@ enum CommandPlanner {
         )
         return PlannedBuild(
             processSteps: [gradle],
-            expectedArtifacts: [
-                PlannedArtifact(
-                    name: "\(module)-release.aab",
-                    type: .aab,
-                    platform: .android,
-                    relativePath: "\(module)/build/outputs/bundle/release"
-                )
-            ]
+            expectedArtifacts: [gradleExpectedArtifact(module: module, flavor: flavor, artifactType: artifactType, androidSubdir: nil)]
         )
     }
 
     private static func planReactNativeAndroid(
         project: Project,
         config: ProjectConfig,
-        credentials: [String: Credential]
+        credentials: [String: Credential],
+        artifactType: BuildArtifact.ArtifactType
     ) -> PlannedBuild {
         let module = config.apps.android?.module ?? "app"
-        let task = bundleTask(forFlavor: config.apps.android?.flavor)
+        let flavor = config.apps.android?.flavor
+        let task = gradleTask(forFlavor: flavor, artifactType: artifactType)
         let pm = resolvePackageManager(project: project, config: config)
         let install = ProcessSpec(
             label: "\(pm.executable) install",
@@ -515,14 +523,7 @@ enum CommandPlanner {
         )
         return PlannedBuild(
             processSteps: [install, gradle],
-            expectedArtifacts: [
-                PlannedArtifact(
-                    name: "\(module)-release.aab",
-                    type: .aab,
-                    platform: .android,
-                    relativePath: "android/\(module)/build/outputs/bundle/release"
-                )
-            ]
+            expectedArtifacts: [gradleExpectedArtifact(module: module, flavor: flavor, artifactType: artifactType, androidSubdir: "android")]
         )
     }
 
@@ -575,10 +576,39 @@ enum CommandPlanner {
         return PackageManager.detect(at: project.url) ?? .npm
     }
 
-    private static func bundleTask(forFlavor flavor: String?) -> String {
-        guard let flavor, !flavor.isEmpty else { return "bundleRelease" }
+    private static func gradleTask(forFlavor flavor: String?, artifactType: BuildArtifact.ArtifactType) -> String {
+        let verb = (artifactType == .apk) ? "assemble" : "bundle"
+        guard let flavor, !flavor.isEmpty else { return "\(verb)Release" }
         let cap = flavor.prefix(1).uppercased() + flavor.dropFirst()
-        return "bundle\(cap)Release"
+        return "\(verb)\(cap)Release"
+    }
+
+    private static func gradleExpectedArtifact(
+        module: String,
+        flavor: String?,
+        artifactType: BuildArtifact.ArtifactType,
+        androidSubdir: String?
+    ) -> PlannedArtifact {
+        let prefix = androidSubdir.map { "\($0)/" } ?? ""
+        let flavorSlug = (flavor?.isEmpty == false) ? "\(flavor!)-" : ""
+        let flavorTask = (flavor?.isEmpty == false) ? "\(flavor!)Release" : "release"
+        if artifactType == .apk {
+            // apk path is `outputs/apk/{flavor}/{buildType}` when a flavor is set,
+            // otherwise just `outputs/apk/release`.
+            let apkDir = (flavor?.isEmpty == false) ? "\(flavor!)/release" : "release"
+            return PlannedArtifact(
+                name: "\(module)-\(flavorSlug)release.apk",
+                type: .apk,
+                platform: .android,
+                relativePath: "\(prefix)\(module)/build/outputs/apk/\(apkDir)"
+            )
+        }
+        return PlannedArtifact(
+            name: "\(module)-\(flavorSlug)release.aab",
+            type: .aab,
+            platform: .android,
+            relativePath: "\(prefix)\(module)/build/outputs/bundle/\(flavorTask)"
+        )
     }
 
     private static func firstXcodeProject(in url: URL) -> String? {

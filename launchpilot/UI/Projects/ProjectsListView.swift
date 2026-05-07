@@ -17,7 +17,7 @@ struct ProjectsListView: View {
                         Button("Reveal in Finder") { appState.revealInFinder(project) }
                         Button("Re-detect framework") { appState.redetectFramework(for: project) }
                         Divider()
-                        Button("Remove from launchpilot", role: .destructive) {
+                        Button("Remove from Launch Pilot", role: .destructive) {
                             appState.removeProject(project)
                         }
                     }

@@ -21,6 +21,7 @@ struct ProjectDetailView: View {
     @State private var configError: String?
     @State private var isGenerating = false
     @State private var selectedTab: ProjectDetailTab = .overview
+    @State private var detectedFlavors: DetectedFlavors = DetectedFlavors()
 
     private var availableTabs: [ProjectDetailTab] {
         var tabs: [ProjectDetailTab] = [.overview, .environment]
@@ -81,7 +82,7 @@ struct ProjectDetailView: View {
                     Button("Reveal in Finder") { appState.revealInFinder(project) }
                     Button("Re-detect framework") { appState.redetectFramework(for: project) }
                     Divider()
-                    Button("Remove from launchpilot", role: .destructive) {
+                    Button("Remove from Launch Pilot", role: .destructive) {
                         appState.removeProject(project)
                     }
                 } label: {
@@ -92,6 +93,7 @@ struct ProjectDetailView: View {
         .task(id: project.id) {
             selectedTab = .overview
             loadConfig()
+            detectedFlavors = FlavorDetector.detect(at: project.url, framework: project.framework)
             appState.refreshEnvironment(for: project)
         }
     }
@@ -99,6 +101,9 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private var iosTab: some View {
         if project.framework.supportsIOS {
+            if !detectedFlavors.iosSchemes.isEmpty {
+                iosSchemePickerSection
+            }
             iosBuildSection
             publishingSection
             if config?.apps.ios?.enabled != true {
@@ -117,6 +122,9 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private var androidTab: some View {
         if project.framework.supportsAndroid {
+            if !detectedFlavors.androidFlavors.isEmpty {
+                androidFlavorPickerSection
+            }
             androidBuildSection
             androidSigningSection
             publishingAndroidSection
@@ -130,6 +138,82 @@ struct ProjectDetailView: View {
             Text("This framework does not support Android builds.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var iosSchemePickerSection: some View {
+        let schemes = detectedFlavors.iosSchemes
+        let current = config?.apps.ios?.scheme ?? ""
+        SectionCard(title: "iOS scheme") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("", selection: Binding<String>(
+                    get: { schemes.contains(current) ? current : (schemes.first ?? "") },
+                    set: { setIOSScheme($0.isEmpty ? nil : $0) }
+                )) {
+                    ForEach(schemes, id: \.self) { scheme in
+                        Text(scheme).tag(scheme)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 360)
+                Text("Detected \(schemes.count) scheme\(schemes.count == 1 ? "" : "s") in the Xcode project. The selected scheme is passed to `xcodebuild archive`.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var androidFlavorPickerSection: some View {
+        let flavors = detectedFlavors.androidFlavors
+        let current = config?.apps.android?.flavor ?? ""
+        SectionCard(title: "Android flavor") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("", selection: Binding<String>(
+                    get: { flavors.contains(current) ? current : "" },
+                    set: { setAndroidFlavor($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("None (default release)").tag("")
+                    ForEach(flavors, id: \.self) { flavor in
+                        Text(flavor.capitalized).tag(flavor)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 360)
+                Text("Detected \(flavors.count) product flavor\(flavors.count == 1 ? "" : "s") in app/build.gradle. The selection drives the Gradle task (e.g. `bundle\(displayCap(current.isEmpty ? "" : current))Release`).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func displayCap(_ s: String) -> String {
+        guard let first = s.first else { return "" }
+        return first.uppercased() + s.dropFirst()
+    }
+
+    private func setIOSScheme(_ scheme: String?) {
+        guard var cfg = config else { return }
+        cfg.apps.ios?.scheme = scheme
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
+        }
+    }
+
+    private func setAndroidFlavor(_ flavor: String?) {
+        guard var cfg = config else { return }
+        cfg.apps.android?.flavor = flavor
+        do {
+            try appState.writeConfig(cfg, for: project)
+            config = cfg
+        } catch {
+            configError = error.localizedDescription
         }
     }
 
@@ -155,14 +239,23 @@ struct ProjectDetailView: View {
     private var androidBuildSection: some View {
         SectionCard(title: "Build Android") {
             VStack(alignment: .leading, spacing: 12) {
-                Button {
-                    appState.startBuild(action: .buildAndroidAAB, for: project)
-                } label: {
-                    Label("Build Android AAB", systemImage: "smartphone")
+                HStack(spacing: 8) {
+                    Button {
+                        appState.startBuild(action: .buildAndroidAAB, for: project)
+                    } label: {
+                        Label("Build AAB", systemImage: "smartphone")
+                    }
+                    .disabled(config?.apps.android?.enabled != true)
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        appState.startBuild(action: .buildAndroidAPK, for: project)
+                    } label: {
+                        Label("Build APK", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(config?.apps.android?.enabled != true)
+                    .buttonStyle(.bordered)
                 }
-                .disabled(config?.apps.android?.enabled != true)
-                .buttonStyle(.borderedProminent)
-                Text("Builds run on your Mac using the same tools you'd use in Terminal. Logs and artifacts are saved to ~/Library/Application Support/launchpilot.")
+                Text("AAB is for Google Play. APK is for direct install or sideloading. Logs and artifacts are saved to ~/Library/Application Support/launchpilot.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
